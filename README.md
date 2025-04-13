@@ -4,7 +4,32 @@ Exploring the relationship between network topology and computational capacity i
 
 ## Installation
 
-Run `uv sync` to install
+### Creation of the dev environment
+
+Run these steps when creating the project for the first time.
+
+1. Initialize environment
+
+```bash
+uv init
+```
+
+Creates `pyproject.toml`, `uv.lock`, and `main.py` files.
+
+2. Add dependencies
+
+```bash
+uv add numpy matplotlib seaborn torch
+uv add ipykernel --optional dev
+```
+
+### Installing the project
+
+Run this step to install the project after `git clone`ing the repo.
+
+```bash
+uv sync
+```
 
 ## Initial goals
 
