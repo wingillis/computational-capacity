@@ -4,11 +4,13 @@ Exploring the relationship between network topology and computational capacity i
 
 ## Installation
 
+Before installing this project, make sure you have [uv](https://github.com/astral-sh/uv) installed. If you don't want to use `uv`, you can likely install via `pip`, although it was not tested.
+
 ### Creation of the dev environment
 
-Run these steps when creating the project for the first time.
+Run these steps when creating the project for the first time. Users who find this repository can skip this step, and go to the ["Installing the project"](#installing-the-project) section.
 
-1. Initialize environment
+Initialize environment:
 
 ```bash
 uv init
@@ -16,7 +18,7 @@ uv init
 
 Creates `pyproject.toml`, `uv.lock`, and `main.py` files.
 
-2. Add dependencies
+Add dependencies:
 
 ```bash
 uv add numpy matplotlib seaborn torch
@@ -28,7 +30,7 @@ uv add ipykernel --optional dev
 Run this step to install the project after `git clone`ing the repo.
 
 ```bash
-uv sync --extra dev  # to include ipykernel
+uv sync --extra dev  # add `--extra dev` to include ipykernel
 ```
 
 ## Initial goals
