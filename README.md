@@ -4,7 +4,7 @@ Exploring the relationship between network topology and computational capacity i
 
 ## Installation
 
-- uv as package manager
+Run `uv sync` to install
 
 ## Initial goals
 
@@ -21,5 +21,3 @@ The framework should consist of at least 3 modules:
 3. A simulation module: this handles running tasks used in the optimization module. Examples: classification, pattern completion, memory.
 
 ### Testing optimization on simple problems
-
-Usin
