@@ -1,5 +1,9 @@
 [project]
 name = "comp-capacity"
+authors = [
+    {name = "Winthrop Gillis", email = "win.gillis@gmail.com"},
+    {name = "Richard Hakim", email = "richhakim@gmail.com"}
+]
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -16,3 +20,7 @@ dependencies = [
 dev = [
     "ipykernel>=6.29.5",
 ]
+
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"

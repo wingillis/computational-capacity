@@ -28,7 +28,7 @@ uv add ipykernel --optional dev
 Run this step to install the project after `git clone`ing the repo.
 
 ```bash
-uv sync
+uv sync --extra dev  # to include ipykernel
 ```
 
 ## Initial goals
