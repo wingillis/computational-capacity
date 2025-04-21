@@ -1,19 +1,8 @@
-from typing import Tuple
-
 import warnings
-
-from pydantic import BaseModel, ConfigDict
 import torch
+import gymnasium as gym
 import matplotlib.pyplot as plt
-
-try:
-    import gym
-except ImportError:
-    warnings.warn(
-        "Could not import some packages",
-        ImportWarning,
-    )
-    gym = None
+from pydantic import BaseModel, ConfigDict
 
 class MatrixContainer(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)

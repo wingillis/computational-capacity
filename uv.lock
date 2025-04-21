@@ -109,12 +109,14 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "ipykernel" },
+    { name = "ipython" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gymnasium", specifier = ">=1.1.1" },
     { name = "ipykernel", marker = "extra == 'dev'", specifier = ">=6.29.5" },
+    { name = "ipython", marker = "extra == 'dev'", specifier = ">=9.1.0" },
     { name = "matplotlib", specifier = ">=3.10.1" },
     { name = "numpy", specifier = ">=2.2.4" },
     { name = "polars", specifier = ">=1.27.1" },

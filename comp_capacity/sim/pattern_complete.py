@@ -6,14 +6,13 @@ This module contains pattern completion tasks, including:
 """
 import numpy as np
 import gymnasium as gym
-from comp_capacity.sim import Task
+from math import ceil
 from typing import Literal
 
 __all__ = ["NextStepFunction", "SequentialPatterns"]
 
 Functions = Literal["linear", "sinusoidal", "exponential"]
-
-# TODO: switch these to gynmasium environments (allows for one API for all tests)
+Pattern = Literal["abab", "increase", "last"]
 
 class NextStepFunction(gym.Env):
 
@@ -26,27 +25,28 @@ class NextStepFunction(gym.Env):
 
         self.action_space = gym.spaces.Space()
 
+        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(steps,), dtype=np.float64)
+        
 
     def step(self, action):
         """
-        Perform a step in the task. This function will generate the next step in the sequence.
+        Perform a step in the task.
         """
         terminated = True
         truncated = False
         # return absolute difference between the action and the target 
-        reward = -np.abs(obs['target'] - action)
+        reward = -np.abs(self.target - action)
 
-        obs = self._get_obs()
         info = self._get_info()
-
+        obs = self._get_obs()
 
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self):
-        return {'data': self.data[:self.steps], 'target': self.data[self.steps]}
+        return self.data[:self.steps]
     
     def _get_info(self):
-        return {'params': self.params}
+        return {'params': self.params, "function": self.func}
 
     def reset(self, *, seed = None, options = None):
         super().reset(seed=seed, options=options)
@@ -62,33 +62,72 @@ class NextStepFunction(gym.Env):
             # set a, b
             self.params = (self.np_random.normal(), self.np_random.normal())
             self.data = np.exp(self.params[0] * np.arange(self.steps + 1) + self.params[1])
+        self.target = self.data[-1]
 
         obs = self._get_obs()
         info = self._get_info()
 
         return obs, info
 
-class SequentialPatterns(Task):
-    def __init__(self, patterns: list):
-        """
-        Initialize the SequentialPatterns task. Accepts a list of patterns.
-        """
-        pass
 
-    def load(self):
+class SequentialPatterns(gym.Env):
+    def __init__(self, pattern: Pattern, steps: int):
         """
-        Load the task. For this module, it generates a sequence of numbers based on the patterns.
+        Initialize the SequentialPatterns task. Accepts a pattern name and a number of steps.
         """
-        pass
+        self.pattern = pattern
+        self.steps = steps
 
-    def step(self):
+        if pattern == "abab":
+            self.action_space = gym.spaces.Discrete(3)
+            self._action_map = {0: "a", 1: "b", 2: "c"}
+            self.observation_space = gym.spaces.Text(max_length=steps)
+        else:
+            self.action_space = gym.spaces.Space()
+            self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(steps,), dtype=np.float64)
+        
+    def step(self, action):
         """
-        Perform a step in the task. This function will generate the next step in the sequence.
+        Perform a step in the task.
         """
-        pass
+        terminated = True
+        truncated = False
 
-    def __iter__(self):
-        """
-        Make the task iterable. This allows for easy iteration over the task.
-        """
-        pass
+        if self.pattern == "abab":
+            # return 1 if the action is correct, else 0
+            reward = 1 if action == self.target else 0
+        else:
+            # return absolute difference between the action and the target for other patterns
+            reward = -np.abs(self.target - action)
+
+        obs = self._get_obs()
+        info = self._get_info()
+        return obs, reward, terminated, truncated, info
+
+    def _get_obs(self):
+        return self.data[:self.steps]
+    
+    def _get_info(self):
+        return {"pattern": self.pattern}
+    
+    def reset(self, *, seed = None, options = None):
+        super().reset(seed=seed, options=options)
+        if self.pattern == "abab":
+            pattern = np.array(["a", "b", "c"])
+            self.np_random.shuffle(pattern)
+            pattern = "".join(pattern) * (ceil(self.steps / 3) + 1)
+
+            self.data = pattern[:self.steps + 1]
+
+        elif self.pattern == "increase":
+            starting_num = self.np_random.randint(0, 10)
+            self.data = np.arange(starting_num, starting_num + self.steps + 1)
+        elif self.pattern == "last":
+            self.data = self.np_random.randint(0, 10, size=self.steps)
+            self.data = np.append(self.data, self.data[-1])
+
+        self.target = self.data[-1]
+
+        obs = self._get_obs()
+        info = self._get_info()
+        return obs, info
