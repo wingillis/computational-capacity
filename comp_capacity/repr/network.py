@@ -27,7 +27,7 @@ class MatrixContainer(BaseModel):
         )
         
     def plot_matrices(self):
-        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axs = plt.subplots(1, 3, figsize=(9, 3))
         axs[0].imshow(self.connectivity.cpu().numpy(), cmap='gray', aspect='auto')
         axs[0].set_title('Connectivity')
         axs[1].imshow(self.module.cpu().numpy(), cmap='gray', aspect='auto')
