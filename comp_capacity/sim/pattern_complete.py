@@ -4,6 +4,7 @@ This module contains pattern completion tasks, including:
 - Producing sequential patterns
 - Associations
 """
+
 import numpy as np
 import gymnasium as gym
 from math import ceil
@@ -14,19 +15,23 @@ __all__ = ["NextStepFunction", "SequentialPatterns"]
 Functions = Literal["linear", "sinusoidal", "exponential"]
 Pattern = Literal["abab", "increase", "last"]
 
+
 class NextStepFunction(gym.Env):
 
     def __init__(self, function: Functions, steps: int):
         """
-        Initialize the NextStepFunction task. Accepts a function name and number of steps. 
+        Initialize the NextStepFunction task. Accepts a function name and number of steps.
         """
         self.func = function
         self.steps = steps
 
-        self.action_space = gym.spaces.Space()
+        self.action_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(1,), dtype=np.float64
+        )
 
-        self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(steps,), dtype=np.float64)
-        
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(steps,), dtype=np.float64
+        )
 
     def step(self, action):
         """
@@ -34,7 +39,7 @@ class NextStepFunction(gym.Env):
         """
         terminated = True
         truncated = False
-        # return absolute difference between the action and the target 
+        # return absolute difference between the action and the target
         reward = -np.abs(self.target - action)
 
         info = self._get_info()
@@ -43,12 +48,12 @@ class NextStepFunction(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self):
-        return self.data[:self.steps]
-    
-    def _get_info(self):
-        return {'params': self.params, "function": self.func}
+        return self.data[: self.steps]
 
-    def reset(self, *, seed = None, options = None):
+    def _get_info(self):
+        return {"params": self.params, "function": self.func}
+
+    def reset(self, *, seed=None, options=None):
         super().reset(seed=seed, options=options)
         if self.func == "linear":
             # set m, b
@@ -56,12 +61,21 @@ class NextStepFunction(gym.Env):
             self.data = np.arange(self.steps + 1) * self.params[0] + self.params[1]
         elif self.func == "sinusoidal":
             # set freq, phase, amplitude
-            self.params = (self.np_random.normal(), self.np_random.normal(), self.np_random.normal())
-            self.data = np.sin(np.arange(self.steps + 1) * self.params[0] + self.params[1]) * self.params[2]
+            self.params = (
+                self.np_random.normal(),
+                self.np_random.normal(),
+                self.np_random.normal(),
+            )
+            self.data = (
+                np.sin(np.arange(self.steps + 1) * self.params[0] + self.params[1])
+                * self.params[2]
+            )
         elif self.func == "exponential":
             # set a, b
             self.params = (self.np_random.normal(), self.np_random.normal())
-            self.data = np.exp(self.params[0] * np.arange(self.steps + 1) + self.params[1])
+            self.data = np.exp(
+                self.params[0] * np.arange(self.steps + 1) + self.params[1]
+            )
         self.target = self.data[-1]
 
         obs = self._get_obs()
@@ -80,12 +94,20 @@ class SequentialPatterns(gym.Env):
 
         if pattern == "abab":
             self.action_space = gym.spaces.Discrete(3)
-            self._action_map = {0: "a", 1: "b", 2: "c"}
-            self.observation_space = gym.spaces.Text(max_length=steps)
+            self.observation_space = gym.spaces.Box(
+                low=0, high=3, shape=(steps,), dtype=np.int64
+            )
         else:
-            self.action_space = gym.spaces.Space()
-            self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(steps,), dtype=np.float64)
-        
+            self.action_space = gym.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(1,), dtype=np.float64
+            )
+            self.observation_space = gym.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(steps,),
+                dtype=np.float64 if pattern != "last" else np.int64,
+            )
+
     def step(self, action):
         """
         Perform a step in the task.
@@ -105,25 +127,25 @@ class SequentialPatterns(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _get_obs(self):
-        return self.data[:self.steps]
-    
+        return self.data[: self.steps]
+
     def _get_info(self):
         return {"pattern": self.pattern}
-    
-    def reset(self, *, seed = None, options = None):
+
+    def reset(self, *, seed=None, options=None):
         super().reset(seed=seed, options=options)
         if self.pattern == "abab":
-            pattern = np.array(["a", "b", "c"])
+            pattern = np.arange(3)
             self.np_random.shuffle(pattern)
-            pattern = "".join(pattern) * (ceil(self.steps / 3) + 1)
+            pattern = np.tile(pattern, ceil(self.steps / 3) + 1)
 
-            self.data = pattern[:self.steps + 1]
+            self.data = pattern[: self.steps + 1].astype(np.int64)
 
         elif self.pattern == "increase":
-            starting_num = self.np_random.randint(0, 10)
-            self.data = np.arange(starting_num, starting_num + self.steps + 1)
+            starting_num = self.np_random.integers(0, 10)
+            self.data = np.arange(starting_num, starting_num + self.steps + 1).astype(np.float64)
         elif self.pattern == "last":
-            self.data = self.np_random.randint(0, 10, size=self.steps)
+            self.data = self.np_random.integers(0, 10, size=self.steps)
             self.data = np.append(self.data, self.data[-1])
 
         self.target = self.data[-1]
