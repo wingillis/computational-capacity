@@ -105,7 +105,7 @@ class Network(nn.Module):
 
         # initialize weights with xavier uniform
         self.apply(self._init_weights)
-        
+
     @torch.no_grad()
     def _init_weights(self, module):
 
@@ -150,7 +150,7 @@ class Network(nn.Module):
             elif N == len(matrices.connectivity) - 1:
                 layer = nn.Linear(inputs.sum(), output_dim)
             else:
-                layer = nn.Linear(inputs.sum(), outputs.sum())
+                layer = nn.Linear(inputs.sum(), 1)
             network[f"{N}"] = nn.Sequential(
                 layer,
                 nonlinearity_fun(),
@@ -171,27 +171,24 @@ class Network(nn.Module):
             torch.Tensor: Output tensor.
         """
 
-        batch, *_  = X.shape
+        batch, *_ = X.shape
 
         if state is None:
-            state = torch.zeros((batch, ) + self.adj_matrix.shape, device=self.adj_matrix.device)
+            state = torch.zeros(
+                (batch, len(self.adj_matrix)), device=self.adj_matrix.device
+            )
 
         # run through input node:
-        out = self.network[f"{0}"](X)
-
-        state[:, 0, self.adj_matrix[0]] = self.network[f"{0}"](X)
+        state[:, self.adj_matrix[0]] = self.network["0"](X)
 
         for node in range(1, len(self.adj_matrix) - 1):
             # node receives inputs from following nodes:
             inputs = self.adj_matrix[:, node]
-
-            tmp = self.network[f"{node}"](state[:, inputs, node])
-            state[:, node, self.adj_matrix[node]] = tmp
+            state[:, node] = self.network[f"{node}"](state[:, inputs]).squeeze()
 
         # run through output node:
-        node = len(self.adj_matrix) - 1
-        inputs = self.adj_matrix[:, node]
-        out = self.network[f"{node}"](state[:, inputs, node])
+        inputs = self.adj_matrix[:, -1]
+        out = self.network[f"{node + 1}"](state[:, inputs])
 
         return out, state
 

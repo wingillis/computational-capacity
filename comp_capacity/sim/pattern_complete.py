@@ -62,7 +62,7 @@ class NextStepFunction(gym.Env):
         elif self.func == "sinusoidal":
             # set freq, phase, amplitude
             self.params = (
-                self.np_random.normal(),
+                self.np_random.uniform() * 2,
                 self.np_random.normal(),
                 self.np_random.normal(),
             )
@@ -74,7 +74,7 @@ class NextStepFunction(gym.Env):
             # set a, b
             self.params = (self.np_random.normal(), self.np_random.normal())
             self.data = np.exp(
-                self.params[0] * np.arange(self.steps + 1) + self.params[1]
+                self.params[0] * np.linspace(0, 2, self.steps + 1) + self.params[1]
             )
         self.target = self.data[-1]
 
