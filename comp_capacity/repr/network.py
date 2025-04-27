@@ -149,7 +149,7 @@ def align_connectivity_matrices(matrices: dict[str, MatrixContainer]):
     return new_matrices
 
 
-class Network(nn.Module):
+class ProgressiveRNN(nn.Module):
     def __init__(
         self,
         matrices: MatrixContainer,
