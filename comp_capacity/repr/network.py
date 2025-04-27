@@ -1,3 +1,5 @@
+from typing import Union, List
+
 import warnings
 import torch
 import numpy as np
@@ -148,8 +150,35 @@ def align_connectivity_matrices(matrices: dict[str, MatrixContainer]):
         new_matrices[_hash] = new_mtx
     return new_matrices
 
+class Network(nn.Module):
+    """
+    A class representing a neural network with a specific architecture.
+    The network is constructed based on the provided matrices, which define
+    the connectivity, module, and nonlinearity of the network.
 
-class ProgressiveRNN(nn.Module):
+    Args:
+        matrices (MatrixContainer): The container holding the connectivity, module, and nonlinearity matrices.
+        input_dim (int): The input dimensionality.
+        output_dim (int): The output dimensionality.
+        device (str | None): The device to create the network on. Defaults to None.
+    """
+    def __init__(
+        self,
+        matrices: MatrixContainer | List[MatrixContainer],
+        input_dim: int,
+        output_dim: int,
+        device: str | None = None,
+    ):
+        super().__init__()
+        
+        self.constructor_matrices = matrices
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.device = device
+        
+
+class ProgressiveRNN(Network):
     def __init__(
         self,
         matrices: MatrixContainer,
@@ -157,9 +186,13 @@ class ProgressiveRNN(nn.Module):
         output_dim: int,
         device: str | None = None,
     ):
-        super().__init__()
+        super().__init__(
+            matrices=matrices,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            device=device,
+        )
 
-        self.constructor_matrices = matrices
         self.adj_matrix = matrices.connectivity
         self.network = self.generate_network(matrices, input_dim, output_dim, device)
 
@@ -258,6 +291,71 @@ class ProgressiveRNN(nn.Module):
 
     def __repr__(self):
         return f"Network. Constructor matrices: {repr(self.constructor_matrices)}"
+    
+    
+class VanillaRNN(Network):
+    def __init__(
+        self,
+        matrices: MatrixContainer,
+        input_dim: int,
+        output_dim: int,
+        device: str | None = None,
+    ):
+        super().__init__(
+            matrices=matrices,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            device=device,
+        )
+
+        self.network = self.generate_network(matrices, input_dim, output_dim, device)
+
+    @staticmethod
+    def generate_network(
+        matrices: MatrixContainer,
+        input_dim: int,
+        output_dim: int,
+        device: str | None = None,
+    ) -> nn.Module:
+        """
+        Generate a network from the given matrices.
+
+        Args:
+            matrices (MatrixContainer): The container holding the adjacency and nonlinearity matrices.
+            input_dim (int): The input dimensionality.
+            output_dim (int): The output dimensionality.
+            device (str, optional): The device to create the network on. Defaults to None.
+
+        Returns:
+            nn.Module: The generated network.
+        """
+        n_nodes = matrices.adjacency.shape[0]
+        
+        ## Make in-projection layer
+        layer_in = nn.Linear(input_dim, n_nodes )
+        
+        ## Make out-projection layer
+        layer_out = nn.Linear(n_nodes, output_dim)
+        
+        ## Make recurrent layer
+        layer_rec = nn.Linear(n_nodes, n_nodes)
+        
+        ## Make nonlinearity layer
+        nonlinearity_fun = NONLINEARITY_MAP[
+            matrices.nonlinearity[0].cpu().numpy().argmax()
+        ]
+        layer_nl_rec = nonlinearity_fun()
+        layer_nl_out = nonlinearity_fun()
+        
+        ## Make network
+        network = nn.ModuleDict()
+        network["in"] = layer_in
+        network["rec"] = layer_rec
+        network["out"] = layer_out
+        network["nl_rec"] = layer_nl_rec
+        network["nl_out"] = layer_nl_out
+        
+        return network.to(device)
 
 
 class Sampler(BaseModel):
