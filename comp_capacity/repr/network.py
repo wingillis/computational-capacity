@@ -119,7 +119,7 @@ class Topology(BaseModel):
 
     def __repr__(self):
         return (
-            f"MatrixContainer: \n"
+            f"Topology: \n"
             f"  Connectivity -- shape: {self.connectivity.shape}, dtype: {self.connectivity.dtype}, device: {self.connectivity.device}, requires_grad: {self.connectivity.requires_grad}; \n"
             f"  Module       -- shape: {self.module.shape}, dtype: {self.module.dtype}, device: {self.module.device}, requires_grad: {self.module.requires_grad}; \n"
             f"  Nonlinearity -- shape: {self.nonlinearity.shape}, dtype: {self.nonlinearity.dtype}, device: {self.nonlinearity.device}, requires_grad: {self.nonlinearity.requires_grad}; \n"
@@ -139,15 +139,14 @@ def align_connectivity_matrices(matrices: dict[str, Topology]):
     largest_sizes = np.zeros(3)
 
     for mtx in matrices.values():
-        sizes = mtx.sizes()
         largest_sizes = np.maximum(largest_sizes, sizes)
 
     new_matrices = {}
     for _hash, mtx in matrices.items():
         pad = (largest_sizes - np.array(mtx.sizes())).astype(int)
 
-        new_mtx = MatrixContainer(
-            connectivity=F.pad(
+        new_mtx = Topology(
+            adjacency=F.pad(
                 mtx.connectivity, (0, pad[0], 0, pad[0]), mode="constant", value=0
             ),
             module=F.pad(mtx.module, (0, pad[1], 0, pad[0]), mode="constant", value=0),
@@ -189,7 +188,7 @@ class Network(nn.Module):
 class ProgressiveRNN(Network):
     def __init__(
         self,
-        matrices: MatrixContainer,
+        matrices: Topology,
         input_dim: int,
         output_dim: int,
         device: str | None = None,
@@ -217,7 +216,7 @@ class ProgressiveRNN(Network):
 
     @staticmethod
     def generate_network(
-        matrices: MatrixContainer,
+        matrices: Topology,
         input_dim: int,
         output_dim: int,
         device: str | None = None,
@@ -226,7 +225,7 @@ class ProgressiveRNN(Network):
         Generate a network from the given matrices.
 
         Args:
-            matrices (MatrixContainer): The container holding the connectivity, module, and nonlinearity matrices.
+            matrices (Topology): The container holding the connectivity, module, and nonlinearity matrices.
             input_dim (int): The input dimensionality.
             output_dim (int): The output dimensionality.
             device (str, optional): The device to create the network on. Defaults to None.
@@ -387,9 +386,9 @@ class Sampler(BaseModel):
             "nonlinearity": network.constructor_matrices.nonlinearity,
         }
 
-    def forward(self, network: Network, environment=None, state=None):
-        return Network(
-            matrices=MatrixContainer(**self.sample(network, environment, state))
+    def forward(self, network: ProgressiveRNN, environment=None, state=None):
+        return ProgressiveRNN(
+            matrices=Topology(**self.sample(network, environment, state))
         )
 
     def __call__(self, **kwargs):
@@ -620,7 +619,7 @@ def sample_network(
     connection_prob: float,
     recurrent: bool,
     device: torch.device | None = None,
-) -> MatrixContainer:
+) -> Topology:
     connectivity = sample_connectivity(
         n_nodes=n_nodes,
         p=connection_prob,
@@ -634,7 +633,7 @@ def sample_network(
     )
 
     module = torch.ones((n_nodes + 2, 1), dtype=torch.bool, device=device)
-    matrices = MatrixContainer(
+    matrices = Topology(
         connectivity=connectivity,
         module=module,
         nonlinearity=nonlinearity,
