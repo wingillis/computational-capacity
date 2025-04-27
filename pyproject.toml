@@ -20,6 +20,8 @@ dependencies = [
     "tqdm>=4.67.0",
     "networkx>=3.4.2",
     "zarr>=3.0.7",
+    "pyarrow>=19.0.1",
+    "umap-learn>=0.5.7",
 ]
 
 [project.optional-dependencies]

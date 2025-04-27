@@ -3,10 +3,23 @@ import torch
 import numpy as np
 import gymnasium as gym
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 from torch import nn
 from pydantic import BaseModel, ConfigDict
 from scipy.sparse.csgraph import shortest_path
 from torch.distributions.multinomial import Multinomial
+
+
+class SineActivation(nn.Module):
+
+    def forward(self, x):
+        return torch.sin(x)
+
+
+class SoftMinus(nn.Module):
+
+    def forward(self, x):
+        return -F.softplus(-x)
 
 
 NONLINEARITY_MAP = {
@@ -14,6 +27,9 @@ NONLINEARITY_MAP = {
     1: nn.Tanh,
     2: nn.LeakyReLU,
     3: nn.Identity,
+    4: SineActivation,
+    5: nn.Softplus,
+    6: SoftMinus,
 }
 
 
@@ -24,19 +40,38 @@ class MatrixContainer(BaseModel):
     module: torch.Tensor
     nonlinearity: torch.Tensor
 
+    @staticmethod
+    def from_concat(concat: torch.Tensor, sizes: tuple):
+        """
+        Args:
+            concat (torch.Tensor): Concatenated matrix.
+            sizes (tuple): Column dimension of each individual matrix.
+        """
+        connectivity = concat[:, : sizes[0]]
+        module = concat[:, sizes[0] : sizes[0] + sizes[1]]
+        nonlinearity = concat[:, sizes[0] + sizes[1] :]
+        return MatrixContainer(
+            connectivity=connectivity, module=module, nonlinearity=nonlinearity
+        )
+
     def concat(self):
         """Returns:
         (torch.Tensor) Concatenated matrices
         (tuple) Column dimension of each individual matrix
         """
-        column_sizes = (
+        return (
+            torch.cat((self.connectivity, self.module, self.nonlinearity), dim=1),
+            self.sizes(),
+        )
+
+    def sizes(self):
+        """Returns:
+        (tuple) Column dimension of each individual matrix
+        """
+        return (
             self.connectivity.size(1),
             self.module.size(1),
             self.nonlinearity.size(1),
-        )
-        return (
-            torch.cat((self.connectivity, self.module, self.nonlinearity), dim=1),
-            column_sizes,
         )
 
     def plot_matrices(self):
@@ -87,6 +122,31 @@ class MatrixContainer(BaseModel):
             f"  Module       -- shape: {self.module.shape}, dtype: {self.module.dtype}, device: {self.module.device}, requires_grad: {self.module.requires_grad}; \n"
             f"  Nonlinearity -- shape: {self.nonlinearity.shape}, dtype: {self.nonlinearity.dtype}, device: {self.nonlinearity.device}, requires_grad: {self.nonlinearity.requires_grad}; \n"
         )
+
+
+def align_connectivity_matrices(matrices: dict[str, MatrixContainer]):
+
+    largest_sizes = np.zeros(3)
+
+    for mtx in matrices.values():
+        sizes = mtx.sizes()
+        largest_sizes = np.maximum(largest_sizes, sizes)
+
+    new_matrices = {}
+    for _hash, mtx in matrices.items():
+        pad = (largest_sizes - np.array(mtx.sizes())).astype(int)
+
+        new_mtx = MatrixContainer(
+            connectivity=F.pad(
+                mtx.connectivity, (0, pad[0], 0, pad[0]), mode="constant", value=0
+            ),
+            module=F.pad(mtx.module, (0, pad[1], 0, pad[0]), mode="constant", value=0),
+            nonlinearity=F.pad(
+                mtx.nonlinearity, (0, pad[2], 0, pad[0]), mode="constant", value=0
+            ),
+        )
+        new_matrices[_hash] = new_mtx
+    return new_matrices
 
 
 class Network(nn.Module):
@@ -187,8 +247,9 @@ class Network(nn.Module):
             state[:, node] = self.network[f"{node}"](state[:, inputs]).squeeze()
 
         # run through output node:
+        node = len(self.adj_matrix) - 1
         inputs = self.adj_matrix[:, -1]
-        out = self.network[f"{node + 1}"](state[:, inputs])
+        out = self.network[f"{node}"](state[:, inputs])
 
         return out, state
 
@@ -426,6 +487,9 @@ def sample_connectivity(
         torch.manual_seed(seed)
 
     probs = torch.full((n_nodes, n_nodes), fill_value=p, device=device)
+    # mask out the diagonal - no self-loops ever
+    probs.fill_diagonal_(0)
+
     probs[:, 0] = 0  # nothing should connect to the input node
     # future TODO: allow output to connect back to hidden nodes (requires extra projection logic)
     probs[-1] = 0  # output node should not connect to anything
@@ -443,3 +507,30 @@ def sample_connectivity(
     sample = add_connectivity(sample.T, probs.T, index=n_nodes - 1).T
 
     return sample
+
+
+def sample_network(
+    n_nodes: int,
+    connection_prob: float,
+    recurrent: bool,
+    device: torch.device | None = None,
+) -> MatrixContainer:
+    connectivity = sample_connectivity(
+        n_nodes=n_nodes,
+        p=connection_prob,
+        recurrent=recurrent,
+        device=device,
+    )
+    nonlinearity = sample_nonlinearity_matrix(
+        n_nodes=n_nodes,
+        n_nonlinearities=len(NONLINEARITY_MAP),
+        device=device,
+    )
+
+    module = torch.ones((n_nodes + 2, 1), dtype=torch.bool, device=device)
+    matrices = MatrixContainer(
+        connectivity=connectivity,
+        module=module,
+        nonlinearity=nonlinearity,
+    )
+    return matrices
