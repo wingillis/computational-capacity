@@ -5,7 +5,7 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torch import nn
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from scipy.sparse.csgraph import shortest_path
 from torch.distributions.multinomial import Multinomial
 
@@ -32,46 +32,46 @@ NONLINEARITY_MAP = {
     6: SoftMinus,
 }
 
-
-class MatrixContainer(BaseModel):
+class Topology(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    connectivity: torch.Tensor
-    module: torch.Tensor
-    nonlinearity: torch.Tensor
+    # (n_nodes, n_nodes)
+    adjacency: torch.Tensor | None = None
+    # (n_nodes, n_nodes)
+    connectivity: torch.Tensor | None = None
+    # (n_nodes, 1)
+    module: torch.Tensor | None = None
+    # (n_nodes, 1)
+    nonlinearity: torch.Tensor | None = None
 
     @staticmethod
-    def from_concat(concat: torch.Tensor, sizes: tuple):
+    def from_concat(concat: torch.Tensor, n_nodes: int):
         """
         Args:
             concat (torch.Tensor): Concatenated matrix.
             sizes (tuple): Column dimension of each individual matrix.
         """
-        connectivity = concat[:, : sizes[0]]
-        module = concat[:, sizes[0] : sizes[0] + sizes[1]]
-        nonlinearity = concat[:, sizes[0] + sizes[1] :]
-        return MatrixContainer(
-            connectivity=connectivity, module=module, nonlinearity=nonlinearity
+        adjacency = concat[:, : n_nodes]
+        connectivity = concat[:, n_nodes:-2]
+        module = concat[:, -2]
+        nonlinearity = concat[:, -1]
+        return Topology(
+            connectivity=connectivity, module=module, nonlinearity=nonlinearity, adjacency=adjacency
         )
 
-    def concat(self):
+    @model_validator(mode='after')
+    def check_matrices(self):
+        if self.connectivity is None:
+            self.connectivity = torch.zeros(self.adjacency.shape, dtype=torch.float32)
+
+    def concat(self) -> tuple[torch.Tensor, int]:
         """Returns:
         (torch.Tensor) Concatenated matrices
-        (tuple) Column dimension of each individual matrix
+        (int) Column dimension of the adjacency matrix
         """
         return (
-            torch.cat((self.connectivity, self.module, self.nonlinearity), dim=1),
-            self.sizes(),
-        )
-
-    def sizes(self):
-        """Returns:
-        (tuple) Column dimension of each individual matrix
-        """
-        return (
-            self.connectivity.size(1),
-            self.module.size(1),
-            self.nonlinearity.size(1),
+            torch.cat((self.adjacency, self.connectivity, self.module, self.nonlinearity), dim=1),
+            len(self.adjacency),
         )
 
     def plot_matrices(self):
@@ -124,7 +124,15 @@ class MatrixContainer(BaseModel):
         )
 
 
-def align_connectivity_matrices(matrices: dict[str, MatrixContainer]):
+class MultiMatrixContainer(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    input: Topology  # input to RNN
+    output: Topology  # output of RNN
+    inner: Topology  # inner layers of RNN
+
+
+def align_connectivity_matrices(matrices: dict[str, Topology]):
 
     largest_sizes = np.zeros(3)
 
