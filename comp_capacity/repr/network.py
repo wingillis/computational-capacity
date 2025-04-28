@@ -1,6 +1,7 @@
-from typing import Union, List
+from typing import Union, List, Tuple
 
 import warnings
+
 import torch
 import numpy as np
 import gymnasium as gym
@@ -10,6 +11,7 @@ from torch import nn
 from pydantic import BaseModel, ConfigDict, model_validator
 from scipy.sparse.csgraph import shortest_path
 from torch.distributions.multinomial import Multinomial
+import xxhash
 
 
 class SineActivation(nn.Module):
@@ -40,90 +42,114 @@ class Topology(BaseModel):
     # (n_nodes, n_nodes)
     adjacency: torch.Tensor | None = None
     # (n_nodes, n_nodes)
-    connectivity: torch.Tensor | None = None
+    weights: torch.Tensor | None = None
     # (n_nodes, 1)
     module: torch.Tensor | None = None
     # (n_nodes, 1)
     nonlinearity: torch.Tensor | None = None
-
-    @staticmethod
-    def from_concat(concat: torch.Tensor, n_nodes: int):
+    
+    def generate_hash(self) -> str:
         """
+        Generate a hash for the given matrices. Provides a unique
+        string for each matrix configuration. Allows for computationally cheap
+        deduplication of networks with the same topology.    
+
         Args:
-            concat (torch.Tensor): Concatenated matrix.
-            sizes (tuple): Column dimension of each individual matrix.
+            matrices (MatrixContainer): The matrices to hash.
+        Returns:
+            str: The hexadecimal digest of the hash.
         """
-        adjacency = concat[:, : n_nodes]
-        connectivity = concat[:, n_nodes:-2]
-        module = concat[:, -2]
-        nonlinearity = concat[:, -1]
-        return Topology(
-            connectivity=connectivity, module=module, nonlinearity=nonlinearity, adjacency=adjacency
-        )
+        # Convert the matrices to a string representation
+        subhashes = []
+        for m in [self.adjacency, self.weights, self.module, self.nonlinearity]:
+            if m is not None:
+                h = xxhash.xxh64_hexdigest(m.cpu().detach().numpy().tobytes())
+            else:
+                h = xxhash.xxh64_hexdigest(b"")
+            subhashes.append(h)
+        hashed = xxhash.xxh64_hexdigest("".join(subhashes))
 
-    @model_validator(mode='after')
-    def check_matrices(self):
-        if self.connectivity is None:
-            self.connectivity = torch.zeros(self.adjacency.shape, dtype=torch.float32)
+        # Return the hexadecimal digest of the hash
+        return hashed 
 
-    def concat(self) -> tuple[torch.Tensor, int]:
-        """Returns:
-        (torch.Tensor) Concatenated matrices
-        (int) Column dimension of the adjacency matrix
-        """
-        return (
-            torch.cat((self.adjacency, self.connectivity, self.module, self.nonlinearity), dim=1),
-            len(self.adjacency),
-        )
+    # @staticmethod
+    # def from_concat(concat: torch.Tensor, n_nodes: int):
+    #     """
+    #     Args:
+    #         concat (torch.Tensor): Concatenated matrix.
+    #         sizes (tuple): Column dimension of each individual matrix.
+    #     """
+    #     adjacency = concat[:, : n_nodes]
+    #     weights = concat[:, n_nodes:-2]
+    #     module = concat[:, -2]
+    #     nonlinearity = concat[:, -1]
+    #     return Topology(
+    #         weights=weights, module=module, nonlinearity=nonlinearity, adjacency=adjacency
+    #     )
 
-    def plot_matrices(self):
-        fig, axs = plt.subplots(1, 3, figsize=(9, 3))
-        for title, mtx, a in zip(
-            ["Connectivity", "Module", "Nonlinearity"],
-            [self.connectivity, self.module, self.nonlinearity],
-            axs.flat,
-        ):
-            a.imshow(mtx.cpu().numpy(), cmap="gray", aspect="auto")
-            a.set(title=title)
+    # @model_validator(mode='after')
+    # def check_matrices(self):
+    #     if self.weights is None:
+    #         self.weights = torch.zeros(self.adjacency.shape, dtype=torch.float32)
 
-    def plot_graph_representation(self) -> plt.Figure:
-        import networkx as nx
+    # def concat(self) -> tuple[torch.Tensor, int]:
+    #     """Returns:
+    #     (torch.Tensor) Concatenated matrices
+    #     (int) Column dimension of the adjacency matrix
+    #     """
+    #     return (
+    #         torch.cat((self.adjacency, self.weights, self.module, self.nonlinearity), dim=1),
+    #         len(self.adjacency),
+    #     )
 
-        g = nx.from_numpy_array(
-            self.connectivity.cpu().numpy(), create_using=nx.DiGraph
-        )
-        name_map = {
-            0: "Input",
-            len(self.connectivity) - 1: "Output",
-        }
-        g = nx.relabel_nodes(g, name_map)
-        edge_label = {}
+    # def plot_matrices(self):
+    #     fig, axs = plt.subplots(1, 3, figsize=(9, 3))
+    #     for title, mtx, a in zip(
+    #         ["Connectivity", "Module", "Nonlinearity"],
+    #         [self.weights, self.module, self.nonlinearity],
+    #         axs.flat,
+    #     ):
+    #         a.imshow(mtx.cpu().numpy(), cmap="gray", aspect="auto")
+    #         a.set(title=title)
 
-        _reverse_map = {v: k for k, v in name_map.items()}
-        for edge in g.edges:
-            input_edge = _reverse_map.get(edge[0], edge[0])
-            nl = self.nonlinearity[input_edge].cpu().numpy().argmax()
-            edge_label[edge] = NONLINEARITY_MAP[nl].__name__
+    # def plot_graph_representation(self) -> plt.Figure:
+    #     import networkx as nx
 
-        pos = nx.spring_layout(g, k=0.8)
-        fig = plt.figure()
-        nx.draw(g, pos=pos, with_labels=True, connectionstyle="arc3,rad=0.1")
-        nx.draw_networkx_edge_labels(
-            g,
-            pos=pos,
-            edge_labels=edge_label,
-            font_color="red",
-            bbox={"facecolor": "white", "alpha": 1, "pad": -2, "linewidth": 0},
-        )
-        return fig
+    #     g = nx.from_numpy_array(
+    #         self.weights.cpu().numpy(), create_using=nx.DiGraph
+    #     )
+    #     name_map = {
+    #         0: "Input",
+    #         len(self.weights) - 1: "Output",
+    #     }
+    #     g = nx.relabel_nodes(g, name_map)
+    #     edge_label = {}
 
-    def __repr__(self):
-        return (
-            f"Topology: \n"
-            f"  Connectivity -- shape: {self.connectivity.shape}, dtype: {self.connectivity.dtype}, device: {self.connectivity.device}, requires_grad: {self.connectivity.requires_grad}; \n"
-            f"  Module       -- shape: {self.module.shape}, dtype: {self.module.dtype}, device: {self.module.device}, requires_grad: {self.module.requires_grad}; \n"
-            f"  Nonlinearity -- shape: {self.nonlinearity.shape}, dtype: {self.nonlinearity.dtype}, device: {self.nonlinearity.device}, requires_grad: {self.nonlinearity.requires_grad}; \n"
-        )
+    #     _reverse_map = {v: k for k, v in name_map.items()}
+    #     for edge in g.edges:
+    #         input_edge = _reverse_map.get(edge[0], edge[0])
+    #         nl = self.nonlinearity[input_edge].cpu().numpy().argmax()
+    #         edge_label[edge] = NONLINEARITY_MAP[nl].__name__
+
+    #     pos = nx.spring_layout(g, k=0.8)
+    #     fig = plt.figure()
+    #     nx.draw(g, pos=pos, with_labels=True, connectionstyle="arc3,rad=0.1")
+    #     nx.draw_networkx_edge_labels(
+    #         g,
+    #         pos=pos,
+    #         edge_labels=edge_label,
+    #         font_color="red",
+    #         bbox={"facecolor": "white", "alpha": 1, "pad": -2, "linewidth": 0},
+    #     )
+    #     return fig
+
+    # def __repr__(self):
+    #     return (
+    #         f"Topology: \n"
+    #         f"  Connectivity -- shape: {self.weights.shape}, dtype: {self.weights.dtype}, device: {self.weights.device}, requires_grad: {self.weights.requires_grad}; \n"
+    #         f"  Module       -- shape: {self.module.shape}, dtype: {self.module.dtype}, device: {self.module.device}, requires_grad: {self.module.requires_grad}; \n"
+    #         f"  Nonlinearity -- shape: {self.nonlinearity.shape}, dtype: {self.nonlinearity.dtype}, device: {self.nonlinearity.device}, requires_grad: {self.nonlinearity.requires_grad}; \n"
+    #     )
 
 
 class MultiMatrixContainer(BaseModel):
@@ -134,54 +160,49 @@ class MultiMatrixContainer(BaseModel):
     inner: Topology  # inner layers of RNN
 
 
-def align_connectivity_matrices(matrices: dict[str, Topology]):
+# def align_connectivity_matrices(matrices: dict[str, Topology]):
 
-    largest_sizes = np.zeros(3)
+#     largest_sizes = np.zeros(3)
 
-    for mtx in matrices.values():
-        largest_sizes = np.maximum(largest_sizes, sizes)
+#     for mtx in matrices.values():
+#         largest_sizes = np.maximum(largest_sizes, sizes)
 
-    new_matrices = {}
-    for _hash, mtx in matrices.items():
-        pad = (largest_sizes - np.array(mtx.sizes())).astype(int)
+#     new_matrices = {}
+#     for _hash, mtx in matrices.items():
+#         pad = (largest_sizes - np.array(mtx.sizes())).astype(int)
 
-        new_mtx = Topology(
-            adjacency=F.pad(
-                mtx.connectivity, (0, pad[0], 0, pad[0]), mode="constant", value=0
-            ),
-            module=F.pad(mtx.module, (0, pad[1], 0, pad[0]), mode="constant", value=0),
-            nonlinearity=F.pad(
-                mtx.nonlinearity, (0, pad[2], 0, pad[0]), mode="constant", value=0
-            ),
-        )
-        new_matrices[_hash] = new_mtx
-    return new_matrices
+#         new_mtx = Topology(
+#             adjacency=F.pad(
+#                 mtx.connectivity, (0, pad[0], 0, pad[0]), mode="constant", value=0
+#             ),
+#             module=F.pad(mtx.module, (0, pad[1], 0, pad[0]), mode="constant", value=0),
+#             nonlinearity=F.pad(
+#                 mtx.nonlinearity, (0, pad[2], 0, pad[0]), mode="constant", value=0
+#             ),
+#         )
+#         new_matrices[_hash] = new_mtx
+#     return new_matrices
 
 class Network(nn.Module):
     """
     A class representing a neural network with a specific architecture.
     The network is constructed based on the provided matrices, which define
-    the connectivity, module, and nonlinearity of the network.
+    the weights, module, and nonlinearity of the network.
 
     Args:
-        matrices (MatrixContainer): The container holding the connectivity, module, and nonlinearity matrices.
+        matrices (Topology | List[Topology]): The container holding the weights, module, and nonlinearity matrices.
         input_dim (int): The input dimensionality.
         output_dim (int): The output dimensionality.
         device (str | None): The device to create the network on. Defaults to None.
     """
     def __init__(
         self,
-        matrices: MatrixContainer | List[MatrixContainer],
-        input_dim: int,
-        output_dim: int,
+        toplogy: Topology | List[Topology],
         device: str | None = None,
     ):
         super().__init__()
         
-        self.constructor_matrices = matrices
-
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.constructor_matrices = toplogy
         self.device = device
         
 
@@ -194,13 +215,15 @@ class ProgressiveRNN(Network):
         device: str | None = None,
     ):
         super().__init__(
-            matrices=matrices,
-            input_dim=input_dim,
-            output_dim=output_dim,
+            toplogy=matrices,
             device=device,
         )
 
-        self.adj_matrix = matrices.connectivity
+        self.adj_matrix = matrices.adjacency
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
         self.network = self.generate_network(matrices, input_dim, output_dim, device)
 
         # initialize weights with xavier uniform
@@ -225,7 +248,7 @@ class ProgressiveRNN(Network):
         Generate a network from the given matrices.
 
         Args:
-            matrices (Topology): The container holding the connectivity, module, and nonlinearity matrices.
+            matrices (Topology): The container holding the weights, module, and nonlinearity matrices.
             input_dim (int): The input dimensionality.
             output_dim (int): The output dimensionality.
             device (str, optional): The device to create the network on. Defaults to None.
@@ -237,17 +260,17 @@ class ProgressiveRNN(Network):
         network = nn.ModuleDict()
 
         # for each node N, find number of input connections:
-        for N, outputs in enumerate(matrices.connectivity):
-            inputs = matrices.connectivity[:, N]
+        for N, outputs in enumerate(matrices.adjacency):
+            inputs = matrices.adjacency[:, N]
 
             # find nonlinearity from map - argmax specifies location of nonlinearity in one-hot encoded matrix
             nonlinearity_fun = NONLINEARITY_MAP[
-                matrices.nonlinearity[N].cpu().numpy().argmax()
+                matrices.nonlinearity[N].cpu().numpy()[0]
             ]
 
             if N == 0:
                 layer = nn.Linear(input_dim, outputs.sum())
-            elif N == len(matrices.connectivity) - 1:
+            elif N == len(matrices.adjacency) - 1:
                 layer = nn.Linear(inputs.sum(), output_dim)
             else:
                 layer = nn.Linear(inputs.sum(), 1)
@@ -303,32 +326,27 @@ class ProgressiveRNN(Network):
 class VanillaRNN(Network):
     def __init__(
         self,
-        matrices: MatrixContainer,
-        input_dim: int,
-        output_dim: int,
+        toplogies: Tuple[Topology, Topology, Topology],
         device: str | None = None,
     ):
         super().__init__(
-            matrices=matrices,
-            input_dim=input_dim,
-            output_dim=output_dim,
+            toplogy=toplogies,
             device=device,
         )
 
-        self.network = self.generate_network(matrices, input_dim, output_dim, device)
+        self.network = self.generate_network(toplogies, device)
+        self.apply(self._init_weights)
 
     @staticmethod
     def generate_network(
-        matrices: MatrixContainer,
-        input_dim: int,
-        output_dim: int,
+        topologies: Tuple[Topology, Topology, Topology],
         device: str | None = None,
     ) -> nn.Module:
         """
         Generate a network from the given matrices.
 
         Args:
-            matrices (MatrixContainer): The container holding the adjacency and nonlinearity matrices.
+            topologies (Tuple[Topology, Topology, Topology]): The container holding the input, output, and recurrent matrices.
             input_dim (int): The input dimensionality.
             output_dim (int): The output dimensionality.
             device (str, optional): The device to create the network on. Defaults to None.
@@ -336,23 +354,21 @@ class VanillaRNN(Network):
         Returns:
             nn.Module: The generated network.
         """
-        n_nodes = matrices.adjacency.shape[0]
+        adj_in, adj_rec, adj_out = (t.adjacency for t in topologies)
+        nl_in, nl_rec, nl_out = (t.nonlinearity for t in topologies)
         
-        ## Make in-projection layer
-        layer_in = nn.Linear(input_dim, n_nodes )
+        n_in, n_rec, n_out = (a.shape[0] for a in (adj_in, adj_rec, adj_out))
         
-        ## Make out-projection layer
-        layer_out = nn.Linear(n_nodes, output_dim)
+        ## Make linear layers
+        layer_in = nn.Linear(n_in, n_rec)  ## input layer
+        layer_rec = nn.Linear(n_rec, n_rec)  ## recurrent layer
+        layer_out = nn.Linear(n_rec, n_out)  ## output layer
         
-        ## Make recurrent layer
-        layer_rec = nn.Linear(n_nodes, n_nodes)
-        
-        ## Make nonlinearity layer
-        nonlinearity_fun = NONLINEARITY_MAP[
-            matrices.nonlinearity[0].cpu().numpy().argmax()
-        ]
-        layer_nl_rec = nonlinearity_fun()
-        layer_nl_out = nonlinearity_fun()
+        ## Make nonlinearity layers
+        if (nl_in is not None) or (nl_rec is not None):
+            raise NotImplementedError("Nonlinearity for input layer not implemented. Only ReLU is supported for now.")
+        layer_nl_rec = NONLINEARITY_MAP[0]()
+        layer_nl_out = NONLINEARITY_MAP[0]()
         
         ## Make network
         network = nn.ModuleDict()
@@ -363,10 +379,49 @@ class VanillaRNN(Network):
         network["nl_out"] = layer_nl_out
         
         return network.to(device)
+    
+    def _init_weights(self, module):
+        """
+        Initialize weights of the network.
+        Args:
+            module (nn.Module): The module to initialize.
+        """
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight)
+            if module.bias is not None:
+                nn.init.normal_(module.bias, std=0.1)
+                
+    def forward(
+        self,
+        X: torch.Tensor,
+        state: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Forward pass through the network.
+        Args:
+            X (torch.Tensor): Input tensor.
+            state (torch.Tensor, optional): State tensor. Defaults to None.
+        Returns:
+            torch.Tensor: Output tensor.
+        """
+        if state is None:
+            state = torch.zeros(
+                (X.shape[0], self.network["rec"].in_features), device=self.device
+            )
+
+        # run through input node:
+        state = self.network["in"](X) + self.network["rec"](state)
+        state = self.network["nl_rec"](state)
+
+        # run through output node:
+        out = self.network["out"](state)
+        out = self.network["nl_out"](out)
+
+        return out, state
 
 
 class Sampler(BaseModel):
-    def connectivity(self, *args, **kwargs):
+    def weights(self, *args, **kwargs):
         pass
 
     def nonlinearity(self, *args, **kwargs):
@@ -381,7 +436,7 @@ class Sampler(BaseModel):
             UserWarning,
         )
         return {
-            "connectivity": network.constructor_matrices.connectivity,
+            "weights": network.constructor_matrices.weights,
             "module": network.constructor_matrices.module,
             "nonlinearity": network.constructor_matrices.nonlinearity,
         }
@@ -398,39 +453,39 @@ class Sampler(BaseModel):
 class Sampler_random(Sampler):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    connectivity_constraint: torch.Tensor
+    weights_constraint: torch.Tensor
     module_constraint: torch.Tensor
     nonlinearity_constraint: torch.Tensor
 
-    connectivity_bounds: tuple = (-1.0, 1.0)
+    weights_bounds: tuple = (-1.0, 1.0)
     module_bounds: tuple = (1.0, 1.0)
     nonlinearity_bounds: tuple = (1.0, 1.0)
 
-    dtype_connectivity: torch.dtype = torch.float32
+    dtype_weights: torch.dtype = torch.float32
     dtype_module: torch.dtype = torch.bool
     dtype_nonlinearity: torch.dtype = torch.float32
 
     def __init__(self, **kwargs):
         super(Sampler_random, self).__init__(**kwargs)
 
-        # self.connectivity_constraint = kwargs.get("connectivity_constraint", torch.empty(0))
+        # self.weights_constraint = kwargs.get("weights_constraint", torch.empty(0))
         # self.module_constraint = kwargs.get("module_constraint", torch.empty(0))
         # self.nonlinearity_constraint = kwargs.get("nonlinearity_constraint", torch.empty(0))
 
-        # if not all([self.connectivity_constraint, self.module_constraint, self.nonlinearity_constraint]):
+        # if not all([self.weights_constraint, self.module_constraint, self.nonlinearity_constraint]):
         #     raise ValueError("All constraints must be provided.")
 
-        # if not all([self.connectivity_bounds, self.module_bounds, self.nonlinearity_bounds]):
+        # if not all([self.weights_bounds, self.module_bounds, self.nonlinearity_bounds]):
         #     raise ValueError("All bounds must be provided.")
 
-        # if not all([self.dtype_connectivity, self.dtype_module, self.dtype_nonlinearity]):
+        # if not all([self.dtype_weights, self.dtype_module, self.dtype_nonlinearity]):
         #     raise ValueError("All dtypes must be provided.")
 
-    def connectivity(self):
+    def weights(self):
         return self._bounded_random(
-            constraint=self.connectivity_constraint,
-            bounds=self.connectivity_bounds,
-            dtype=self.dtype_connectivity,
+            constraint=self.weights_constraint,
+            bounds=self.weights_bounds,
+            dtype=self.dtype_weights,
         )
 
     def nonlinearity(self):
@@ -468,12 +523,12 @@ class Sampler_random(Sampler):
         """
         Generate a randomly sampled network based on the provided constraints.
         """
-        connectivity = self.connectivity()
+        weights = self.weights()
         nonlinearity = self.nonlinearity()
         module = self.module()
 
         return {
-            "connectivity": connectivity,
+            "weights": weights,
             "module": module,
             "nonlinearity": nonlinearity,
         }
@@ -511,7 +566,6 @@ def sample_nonlinearity_matrix(
     Returns:
         torch.Tensor: One-hot encoded nonlinearity matrix with shape (n_nodes, n_nonlinearities).
     """
-    n_nodes += 2  # add input and output nodes
     if seed is not None:
         torch.manual_seed(seed)
 
@@ -585,30 +639,24 @@ def sample_connectivity(
         seed (int, optional): Random seed for reproducibility.
         device (str, optional): Device to create the tensor on. Defaults to None.
     """
-
-    n_nodes += 2  # add input and output nodes
-
     if seed is not None:
         torch.manual_seed(seed)
 
     probs = torch.full((n_nodes, n_nodes), fill_value=p, device=device)
     # mask out the diagonal - no self-loops ever
-    probs.fill_diagonal_(0)
+    # probs.fill_diagonal_(0)
 
-    probs[:, 0] = 0  # nothing should connect to the input node
-    # future TODO: allow output to connect back to hidden nodes (requires extra projection logic)
-    probs[-1] = 0  # output node should not connect to anything
     if not recurrent:
         # Ensure no self-loops and no backward connections
         probs = torch.triu(probs, diagonal=1)
-        probs[0, 1] = 1  # ensure input node connects to first hidden node
 
+    # fill boolean values with probabilities
     sample = torch.bernoulli(probs).to(dtype=torch.bool)
 
     # make sure each node is reachable from the input node
     sample = add_connectivity(sample, probs, index=0)
 
-    # make sure output node is reachable from all nodes (except input)
+    # make sure output node is reachable from all nodes
     sample = add_connectivity(sample.T, probs.T, index=n_nodes - 1).T
 
     return sample
@@ -620,7 +668,7 @@ def sample_network(
     recurrent: bool,
     device: torch.device | None = None,
 ) -> Topology:
-    connectivity = sample_connectivity(
+    adjacency = sample_connectivity(
         n_nodes=n_nodes,
         p=connection_prob,
         recurrent=recurrent,
@@ -632,9 +680,9 @@ def sample_network(
         device=device,
     )
 
-    module = torch.ones((n_nodes + 2, 1), dtype=torch.bool, device=device)
+    module = torch.ones((n_nodes, 1), dtype=torch.bool, device=device)
     matrices = Topology(
-        connectivity=connectivity,
+        adjacency=adjacency,
         module=module,
         nonlinearity=nonlinearity,
     )
