@@ -357,12 +357,12 @@ class VanillaRNN(Network):
         adj_in, adj_rec, adj_out = (t.adjacency for t in topologies)
         nl_in, nl_rec, nl_out = (t.nonlinearity for t in topologies)
         
-        n_in, n_rec, n_out = (a.shape[0] for a in (adj_in, adj_rec, adj_out))
+        # n_in, n_rec, n_out = (a.shape[0] for a in (adj_in, adj_rec, adj_out))
         
         ## Make linear layers
-        layer_in = nn.Linear(n_in, n_rec)  ## input layer
-        layer_rec = nn.Linear(n_rec, n_rec)  ## recurrent layer
-        layer_out = nn.Linear(n_rec, n_out)  ## output layer
+        layer_in = nn.Linear(adj_in.shape[0], adj_in.shape[1])  ## input layer
+        layer_rec = nn.Linear(adj_rec.shape[0], adj_rec.shape[1])  ## recurrent layer
+        layer_out = nn.Linear(adj_out.shape[0], adj_out.shape[1])  ## output layer
         
         ## Make nonlinearity layers
         if (nl_in is not None) or (nl_rec is not None):
