@@ -72,6 +72,14 @@ class Topology(BaseModel):
         # Return the hexadecimal digest of the hash
         return hashed 
 
+    @property
+    def sizes(self) -> Tuple[int, int, int]:
+        return (
+            self.adjacency.shape[0],
+            self.module.shape[0],
+            self.nonlinearity.shape[0],
+        )
+
     # @staticmethod
     # def from_concat(concat: torch.Tensor, n_nodes: int):
     #     """
@@ -160,28 +168,6 @@ class MultiMatrixContainer(BaseModel):
     inner: Topology  # inner layers of RNN
 
 
-# def align_connectivity_matrices(matrices: dict[str, Topology]):
-
-#     largest_sizes = np.zeros(3)
-
-#     for mtx in matrices.values():
-#         largest_sizes = np.maximum(largest_sizes, sizes)
-
-#     new_matrices = {}
-#     for _hash, mtx in matrices.items():
-#         pad = (largest_sizes - np.array(mtx.sizes())).astype(int)
-
-#         new_mtx = Topology(
-#             adjacency=F.pad(
-#                 mtx.connectivity, (0, pad[0], 0, pad[0]), mode="constant", value=0
-#             ),
-#             module=F.pad(mtx.module, (0, pad[1], 0, pad[0]), mode="constant", value=0),
-#             nonlinearity=F.pad(
-#                 mtx.nonlinearity, (0, pad[2], 0, pad[0]), mode="constant", value=0
-#             ),
-#         )
-#         new_matrices[_hash] = new_mtx
-#     return new_matrices
 
 class Network(nn.Module):
     """
@@ -420,37 +406,7 @@ class VanillaRNN(Network):
         return out, state
 
 
-class Sampler(BaseModel):
-    def weights(self, *args, **kwargs):
-        pass
-
-    def nonlinearity(self, *args, **kwargs):
-        pass
-
-    def module(self, *args, **kwargs):
-        pass
-
-    def sample(self, network: Network, environment=None, state=None):
-        warnings.warn(
-            "Sampler.sample is not implemented. This is a placeholder function.",
-            UserWarning,
-        )
-        return {
-            "weights": network.constructor_matrices.weights,
-            "module": network.constructor_matrices.module,
-            "nonlinearity": network.constructor_matrices.nonlinearity,
-        }
-
-    def forward(self, network: ProgressiveRNN, environment=None, state=None):
-        return ProgressiveRNN(
-            matrices=Topology(**self.sample(network, environment, state))
-        )
-
-    def __call__(self, **kwargs):
-        return self.forward(**kwargs)
-
-
-class Sampler_random(Sampler):
+class Sampler_random(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     weights_constraint: torch.Tensor
