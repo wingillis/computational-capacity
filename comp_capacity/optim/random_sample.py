@@ -1,5 +1,7 @@
 import torch
+import random
 import numpy as np
+from pydantic import BaseModel, Field
 from torch.distributions import Multinomial
 from scipy.sparse.csgraph import shortest_path
 from comp_capacity.repr.network import Topology, NONLINEARITY_MAP
@@ -15,10 +17,19 @@ from comp_capacity.repr.network import Topology, NONLINEARITY_MAP
 # 2. module matrix is all 'nodes', i.e. [1, 0, 0, 0]
 # 3. nonlinearity matrix is all 'linear / none' and 'relu', 'tanh', i.e. [0, 1, 0, 0]
 
+class SamplingParameters(BaseModel):
+    connection_prob: float
+    recurrent: bool
+    # flag to allow modification of input/output projections
+    # for now, I keep it off because it can make the search space too large
+    modify_projections: bool = False
+    # this parameter is for random sampling only
+    increase_node_prob: float = Field(gt=0, lt=1, default=0.1)
 
-def construct_sampling_mask(n_nodes: int, connection_prob: float, recurrent: bool, device: torch.device | str | None = None):
-    probs = torch.full((n_nodes, n_nodes), fill_value=connection_prob, device=device)
-    if not recurrent:
+
+def construct_sampling_mask(n_nodes: int, sampling_parameters: SamplingParameters, device: torch.device | str | None = None):
+    probs = torch.full((n_nodes, n_nodes), fill_value=sampling_parameters.connection_prob, device=device)
+    if not sampling_parameters.recurrent:
         probs = torch.triu(probs, diagonal=1)
     return probs
 
@@ -96,9 +107,8 @@ def add_connectivity(adj_matrix, orig_mask, index=0):
 
 
 def sample_connectivity(
-    n_nodes: int = 2,
-    p: float = 0.5,
-    recurrent: bool = False,
+    n_nodes: int,
+    sampling_parameters: SamplingParameters,
     seed: int | None = None,
     device: str | None = None,
 ):
@@ -119,7 +129,7 @@ def sample_connectivity(
     if seed is not None:
         torch.manual_seed(seed)
 
-    probs = construct_sampling_mask(n_nodes, p, recurrent, device)
+    probs = construct_sampling_mask(n_nodes, sampling_parameters, device)
 
     # fill boolean values with probabilities
     sample = torch.bernoulli(probs).to(dtype=torch.bool)
@@ -135,14 +145,12 @@ def sample_connectivity(
 
 def sample_topology(
     n_nodes: int,
-    connection_prob: float,
-    recurrent: bool,
+    sampling_parameters: SamplingParameters,
     device: torch.device | None = None,
 ) -> Topology:
     adjacency = sample_connectivity(
         n_nodes=n_nodes,
-        p=connection_prob,
-        recurrent=recurrent,
+        sampling_parameters=sampling_parameters,
         device=device,
     )
     nonlinearity = sample_nonlinearity_matrix(
@@ -158,3 +166,17 @@ def sample_topology(
         nonlinearity=nonlinearity,
     )
     return matrices
+
+
+def random_step(networks: list[Topology], score: list[float], sampling_parameters: SamplingParameters, rng: random.Random) -> list[Topology]:
+
+    device = networks[0].device
+
+    n_networks = len(networks)
+
+    max_nodes = max(x.n_nodes for x in networks)
+
+    node_list = np.array([rng.random() < sampling_parameters.increase_node_prob for _ in range(n_networks)])
+    node_list = np.cumsum(node_list) + max_nodes
+
+    return [sample_topology(n_nodes, sampling_parameters, device=device) for n_nodes in node_list]

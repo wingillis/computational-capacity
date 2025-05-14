@@ -16,6 +16,7 @@ from comp_capacity.optim.random_sample import (
     add_connectivity,
     sample_nonlinearity_matrix,
     construct_sampling_mask,
+    SamplingParameters,
 )
 
 
@@ -37,11 +38,6 @@ class ManipulationType(Enum):
     ADD = "add"
     REMOVE = "remove"
     MOVE = "move"
-
-
-class SamplingParameters(BaseModel):
-    connection_prob: float
-    recurrent: bool
 
 
 class EvolutionParameters(BaseModel):
@@ -72,8 +68,7 @@ def add_node(
 
     sampling_probs = construct_sampling_mask(
         n_nodes + 1,
-        sampling_parameters.connection_prob,
-        sampling_parameters.recurrent,
+        sampling_parameters,
         device,
     )
 
@@ -247,8 +242,7 @@ def add_edge(
 
     sampling_probs = construct_sampling_mask(
         n_nodes,
-        sampling_parameters.connection_prob,
-        sampling_parameters.recurrent,
+        sampling_parameters,
         device,
     )
     # set probs to 0 for all edges that already exist
@@ -303,8 +297,7 @@ def move_edge(
 
     sampling_probs = construct_sampling_mask(
         n_nodes,
-        sampling_parameters.connection_prob,
-        sampling_parameters.recurrent,
+        sampling_parameters,
         device,
     )
     # set probs to 0 for all edges that already exist
@@ -646,8 +639,8 @@ def reproduce(
 def evolution_step(
     topologies: list[Topology],
     fitness: list[float],
-    evolution_parameters: EvolutionParameters,
     sampling_parameters: SamplingParameters,
+    evolution_parameters: EvolutionParameters,
     rng: random.Random,
 ) -> list[Topology]:
     # survival selection

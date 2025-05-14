@@ -130,6 +130,10 @@ class Topology:
     def bytes(self) -> bytes:
         return b"".join(m.bytes for m in self)
 
+    @property
+    def n_nodes(self) -> int:
+        return self.inner.adjacency.shape[0]
+
     def __iter__(self):
         return iter((self.input, self.inner, self.output))
 
