@@ -43,12 +43,13 @@ class ManipulationType(Enum):
 class EvolutionParameters(BaseModel):
     survival_rate: float = Field(ge=0, le=1)  # proportion of population to survive
     mutation_rate: float = Field(ge=0, le=1)  # proportion of population to mutate
+    random_sample_rate: float = Field(
+        ge=0, le=1, default=0
+    )  # probability of adding a new random topology
 
-    # compute reproductive rate after pydantic initialization
-    @property
-    def reproductive_rate(self) -> float:
-        # keep popultation same size
-        return 1 - self.survival_rate
+    def reproduction_amount(self, total_pop: int) -> int:
+        # keep population size constant
+        return round((1 - self.survival_rate) * total_pop)
 
 
 def add_node(
@@ -359,6 +360,7 @@ def duplicate_block(
     topology: Topology,
     rng: random.Random,
 ) -> Topology:
+
     # Get the adjacency matrix
     adjacency = topology.inner.adjacency
     device = adjacency.device
@@ -582,8 +584,9 @@ def crossover(topology1: Topology, topology2: Topology, rng: random.Random) -> T
     new_inner = InnerTopology(
         adjacency=adjacency2,
         nonlinearity=nonlinearity2,
-        module=topology2.inner.module,
     )
+
+    # TODO: check that the input and output projections are valid sizes
 
     return Topology(input=topology2.input, output=topology2.output, inner=new_inner)
 
@@ -601,53 +604,74 @@ def crossover_topologies(
 
     pairs = list(zip(topologies[::2], topologies[1::2]))
 
-    new_topologies = []
-    # perform crossover
-    for pair in pairs:
-        new_pair = crossover(pair[0], pair[1], rng)
-        new_topologies.extend(new_pair)
+    new_topologies = [crossover(*pair, rng) for pair in pairs]
 
     return new_topologies
 
 
 def survival_selection(
-    topologies: list[Topology], fitness: list[float], parameters: EvolutionParameters
+    topologies: list[Topology], fitness: torch.Tensor, parameters: EvolutionParameters
 ) -> list[Topology]:
+
+    if not isinstance(fitness, torch.Tensor):
+        logging.warning("Fitness is not a torch.Tensor, converting to one")
+        fitness = torch.tensor(fitness)
+
     # fitness proportional selection approach
     choices = torch.distributions.Categorical(probs=fitness).sample(
-        int(len(topologies) * parameters.survival_rate)
+        (round(len(topologies) * parameters.survival_rate), )
     )
     return [topologies[i] for i in choices]
 
 
 def reproduce(
-    topologies: list[Topology], parameters: EvolutionParameters, rng: random.Random
+    topologies: list[Topology], n_babies: int, rng: random.Random
 ) -> list[Topology]:
-    n_babies = int(len(topologies) * parameters.reproductive_rate)
+
+    original_size = len(topologies)
+
+    if original_size < n_babies * 2:
+        logging.info(f"Not enough topologies to reproduce, only {original_size} parents - copying parents to achieve {n_babies} babies")
+        topologies = topologies + topologies[:(n_babies * 2) - len(topologies)]
 
     # shuffle list, then pair topologies up
     rng.shuffle(topologies)
 
-    # select parents
     parents = topologies[: n_babies * 2]
 
     babies = crossover_topologies(parents, rng)
 
-    return topologies + babies
+    return topologies[:original_size] + babies
 
 
 def evolution_step(
     topologies: list[Topology],
     fitness: list[float],
     sampling_parameters: SamplingParameters,
+    input_dim: int,
+    output_dim: int,
     evolution_parameters: EvolutionParameters,
     rng: random.Random,
 ) -> list[Topology]:
+
+    population_size = len(topologies)
+
+    logging.info(f"Measured population size: {population_size}")
+
+    n_babies = evolution_parameters.reproduction_amount(population_size)
+    logging.info(f"Producing {n_babies} babies")
+
     # survival selection
-    survived_topologies = survival_selection(topologies, fitness, evolution_parameters)
+    survived_topologies = survival_selection(topologies, torch.tensor(fitness), evolution_parameters)
+    logging.info(f"{len(survived_topologies)} topologies survived selection")
 
     # reproduction
-    reproduced_topologies = reproduce(survived_topologies, evolution_parameters, rng)
+    reproduced_topologies = reproduce(survived_topologies, n_babies, rng)
+    logging.info(f"{len(reproduced_topologies)} babies were produced")
+
+    logging.info(f"New population size: {len(reproduced_topologies)}")
+    if len(reproduced_topologies) != population_size:
+        logging.warning(f"New population size does not match expected size: {len(reproduced_topologies)} != {population_size}")
 
     # mutation
     mutated_topologies = []
@@ -658,5 +682,25 @@ def evolution_step(
             mutated_topologies.append(mutated)
         else:
             mutated_topologies.append(topology)
+
+    # every once in a while, add a new random topology
+    if rng.random() < evolution_parameters.random_sample_rate:
+        index = rng.randint(0, len(mutated_topologies))
+        logging.info(f"Replacing topology at index {index} with a random one")
+        n_nodes = rng.randint(
+            min(t.n_nodes for t in mutated_topologies),
+            max(t.n_nodes for t in mutated_topologies),
+        )
+        new_topology = sample_topology(
+            n_nodes=n_nodes,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            sampling_parameters=sampling_parameters,
+            device=mutated_topologies[0].inner.adjacency.device,
+            rng=rng,
+        )
+        assert isinstance(new_topology, Topology)
+
+        mutated_topologies[index] = new_topology
 
     return mutated_topologies

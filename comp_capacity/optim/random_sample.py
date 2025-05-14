@@ -4,18 +4,13 @@ import numpy as np
 from pydantic import BaseModel, Field
 from torch.distributions import Multinomial
 from scipy.sparse.csgraph import shortest_path
-from comp_capacity.repr.network import Topology, NONLINEARITY_MAP
+from comp_capacity.repr.network import (
+    Topology,
+    NONLINEARITY_MAP,
+    InnerTopology,
+    Projection,
+)
 
-## Conventions for matrix
-# 1. rows are 'from' nodes
-# 2. columns are 'to' nodes
-# 3. the first row is the input layer
-# 4. the last column is the output layer
-
-## to start
-# 1. mask out lower triangular and diagonal elements (make DAG)
-# 2. module matrix is all 'nodes', i.e. [1, 0, 0, 0]
-# 3. nonlinearity matrix is all 'linear / none' and 'relu', 'tanh', i.e. [0, 1, 0, 0]
 
 class SamplingParameters(BaseModel):
     connection_prob: float
@@ -27,8 +22,16 @@ class SamplingParameters(BaseModel):
     increase_node_prob: float = Field(gt=0, lt=1, default=0.1)
 
 
-def construct_sampling_mask(n_nodes: int, sampling_parameters: SamplingParameters, device: torch.device | str | None = None):
-    probs = torch.full((n_nodes, n_nodes), fill_value=sampling_parameters.connection_prob, device=device)
+def construct_sampling_mask(
+    n_nodes: int,
+    sampling_parameters: SamplingParameters,
+    device: torch.device | str | None = None,
+):
+    probs = torch.full(
+        (n_nodes, n_nodes),
+        fill_value=sampling_parameters.connection_prob,
+        device=device,
+    )
     if not sampling_parameters.recurrent:
         probs = torch.triu(probs, diagonal=1)
     return probs
@@ -106,23 +109,21 @@ def add_connectivity(adj_matrix, orig_mask, index=0):
     return adj_matrix
 
 
-def sample_connectivity(
+def sample_adjacency_matrix(
     n_nodes: int,
     sampling_parameters: SamplingParameters,
     seed: int | None = None,
     device: str | None = None,
 ):
     """
-    Generate a random connectivity matrix of shape (n_nodes + 2, n_nodes + 2).
-    The first and last nodes are the input and output nodes, respectively.
+    Generate a random connectivity matrix of shape (n_nodes, n_nodes).
     The connectivity is generated using a Bernoulli distribution with probability p.
     The function ensures that each node is reachable from the input node and
     the output node is reachable from all nodes (except the input).
 
     Args:
         n_nodes (int): Number of nodes (not including input and output nodes).
-        p (float): Probability of connection between nodes.
-        recurrent (bool): If True, allows recurrent connections.
+        sampling_parameters (SamplingParameters): Sampling parameter data class.
         seed (int, optional): Random seed for reproducibility.
         device (str, optional): Device to create the tensor on. Defaults to None.
     """
@@ -143,40 +144,117 @@ def sample_connectivity(
     return sample
 
 
-def sample_topology(
+def sample_projection(
     n_nodes: int,
+    dim: int,
     sampling_parameters: SamplingParameters,
     device: torch.device | None = None,
+    rng: random.Random | None = None,
+) -> Projection:
+
+    if rng is not None:
+        torch.manual_seed(rng.randint(0, 2**32 - 1))
+    else:
+        rng = random.Random()
+
+    connectivity = torch.bernoulli(
+        torch.full(
+            (n_nodes, dim),
+            fill_value=sampling_parameters.connection_prob,
+            device=device,
+        )
+    ).to(dtype=torch.bool)
+
+    # make sure each column has at least one connection
+    for i in range(dim):
+        if not connectivity[:, i].any():
+            j = rng.randint(0, n_nodes - 1)
+            connectivity[j, i] = True
+
+    return Projection(dim=dim, n_nodes=n_nodes, device=device, adjacency=connectivity)
+
+
+def sample_topology(
+    n_nodes: int,
+    input_dim: int,
+    output_dim: int,
+    sampling_parameters: SamplingParameters,
+    device: torch.device | None = None,
+    rng: random.Random | None = None,
 ) -> Topology:
-    adjacency = sample_connectivity(
+    if rng is None:
+        rng = random.Random()
+
+    adjacency = sample_adjacency_matrix(
         n_nodes=n_nodes,
         sampling_parameters=sampling_parameters,
         device=device,
+        seed=rng.randint(0, 2**32 - 1),
     )
     nonlinearity = sample_nonlinearity_matrix(
         n_nodes=n_nodes,
         n_nonlinearities=len(NONLINEARITY_MAP),
         device=device,
+        seed=rng.randint(0, 2**32 - 1),
     )
 
-    module = torch.ones((n_nodes, 1), dtype=torch.bool, device=device)
-    matrices = Topology(
+    matrices = InnerTopology(
         adjacency=adjacency,
-        module=module,
         nonlinearity=nonlinearity,
     )
-    return matrices
+
+    if not sampling_parameters.modify_projections:
+        input_projection = Projection(dim=input_dim, n_nodes=n_nodes, device=device)
+        output_projection = Projection(dim=output_dim, n_nodes=n_nodes, device=device)
+    else:
+        input_projection = sample_projection(
+            n_nodes=n_nodes,
+            dim=input_dim,
+            sampling_parameters=sampling_parameters,
+            device=device,
+            rng=rng,
+        )
+        output_projection = sample_projection(
+            n_nodes=n_nodes,
+            dim=output_dim,
+            sampling_parameters=sampling_parameters,
+            device=device,
+            rng=rng,
+        )
+
+    return Topology(
+        input=input_projection,
+        output=output_projection,
+        inner=matrices,
+    )
 
 
-def random_step(networks: list[Topology], score: list[float], sampling_parameters: SamplingParameters, rng: random.Random) -> list[Topology]:
+def random_step(
+    networks: list[Topology],
+    score: list[float],
+    sampling_parameters: SamplingParameters,
+    input_dim: int,
+    output_dim: int,
+    rng: random.Random,
+) -> list[Topology]:
 
-    device = networks[0].device
+    device = networks[0].adjacencies[1].device
 
     n_networks = len(networks)
 
     max_nodes = max(x.n_nodes for x in networks)
 
-    node_list = np.array([rng.random() < sampling_parameters.increase_node_prob for _ in range(n_networks)])
+    node_list = np.array(
+        [
+            rng.random() < sampling_parameters.increase_node_prob
+            for _ in range(n_networks)
+        ]
+    )
     node_list = np.cumsum(node_list) + max_nodes
 
-    return [sample_topology(n_nodes, sampling_parameters, device=device) for n_nodes in node_list]
+    return [
+        sample_topology(
+            n_nodes, input_dim, output_dim, sampling_parameters, device=device, rng=rng
+        )
+        for n_nodes in node_list
+    ]

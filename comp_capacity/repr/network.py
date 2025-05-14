@@ -41,11 +41,11 @@ class Projection:
     adjacency: torch.Tensor | None = None
     weights: torch.Tensor | None = None
 
-    fully_connected: bool = field(default=False)
+    fully_connected: bool = field(init=False)
 
     def __post_init__(self):
         # if adjacency is not provided, assume fully connected
-        self.fully_connected = self.adjacency is None or (1 - self.adjacency).sum() == 0
+        self.fully_connected = self.adjacency is None or (1 - self.adjacency.int()).sum() == 0
 
         if self.fully_connected:
             self.adjacency = torch.ones(
@@ -67,6 +67,11 @@ class Projection:
             for m in (self.adjacency, self.weights)
             if m is not None
         )
+
+
+## Conventions for adjacency matrices
+# 1. rows indicate which nodes have edges coming 'from' them, i.e., outgoing node connections
+# 2. columns indicate which nodes have edges going 'to' them, i.e., incoming node connections
 
 
 # proposed data structure for representing the inner network topology
