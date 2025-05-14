@@ -16,6 +16,13 @@ from comp_capacity.repr.network import Topology, NONLINEARITY_MAP
 # 3. nonlinearity matrix is all 'linear / none' and 'relu', 'tanh', i.e. [0, 1, 0, 0]
 
 
+def construct_sampling_mask(n_nodes: int, connection_prob: float, recurrent: bool, device: torch.device | str | None = None):
+    probs = torch.full((n_nodes, n_nodes), fill_value=connection_prob, device=device)
+    if not recurrent:
+        probs = torch.triu(probs, diagonal=1)
+    return probs
+
+
 def sample_nonlinearity_matrix(
     n_nodes: int = 2,
     n_nonlinearities: int = 2,
@@ -112,13 +119,7 @@ def sample_connectivity(
     if seed is not None:
         torch.manual_seed(seed)
 
-    probs = torch.full((n_nodes, n_nodes), fill_value=p, device=device)
-    # mask out the diagonal - no self-loops ever
-    # probs.fill_diagonal_(0)
-
-    if not recurrent:
-        # Ensure no self-loops and no backward connections
-        probs = torch.triu(probs, diagonal=1)
+    probs = construct_sampling_mask(n_nodes, p, recurrent, device)
 
     # fill boolean values with probabilities
     sample = torch.bernoulli(probs).to(dtype=torch.bool)
@@ -132,7 +133,7 @@ def sample_connectivity(
     return sample
 
 
-def sample_network(
+def sample_topology(
     n_nodes: int,
     connection_prob: float,
     recurrent: bool,
