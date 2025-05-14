@@ -5,7 +5,12 @@ import numpy as np
 from enum import Enum
 from typing import Literal
 from pydantic import BaseModel, Field
-from comp_capacity.repr.network import Topology, NONLINEARITY_MAP
+from comp_capacity.repr.network import (
+    Topology,
+    InnerTopology,
+    Projection,
+    NONLINEARITY_MAP,
+)
 from comp_capacity.optim.random_sample import (
     sample_topology,
     add_connectivity,
@@ -53,13 +58,13 @@ class EvolutionParameters(BaseModel):
 def add_node(
     topology: Topology, sampling_parameters: SamplingParameters, rng: random.Random
 ) -> Topology:
-    n_nodes = topology.adjacency.shape[0]
-    device = topology.adjacency.device
+    n_nodes = topology.inner.adjacency.shape[0]
+    device = topology.inner.adjacency.device
     where = rng.randint(0, n_nodes - 1)
 
     logging.info(f"Adding node at {where}")
 
-    new_adjacency = topology.adjacency.cpu().numpy()
+    new_adjacency = topology.inner.adjacency.cpu().numpy()
     new_adjacency = np.insert(new_adjacency, where, values=0, axis=0)
     new_adjacency = np.insert(new_adjacency, where, values=0, axis=1)
 
@@ -73,7 +78,6 @@ def add_node(
     )
 
     sample = torch.bernoulli(sampling_probs[where, :])
-
     new_adjacency[where, :] = sample
 
     sample = torch.bernoulli(sampling_probs[:, where])
@@ -88,26 +92,78 @@ def add_node(
     )
     new_nonlinearity = torch.cat(
         [
-            topology.nonlinearity[:where],
+            topology.inner.nonlinearity[:where],
             new_nonlinearity_row,
-            topology.nonlinearity[where:],
+            topology.inner.nonlinearity[where:],
         ]
     )
 
-    new_topology = Topology(
+    # Update input projection - insert new row
+    new_input_adjacency = topology.input.adjacency.cpu().numpy()
+    new_input_adjacency = np.insert(
+        new_input_adjacency, where, values=topology.input.fully_connected, axis=0
+    )
+    new_input_adjacency = torch.from_numpy(new_input_adjacency).to(device=device)
+
+    # Sample connections for the new node from input
+    if not topology.input.fully_connected:
+        input_sample = torch.bernoulli(
+            torch.full(
+                (topology.input.dim,),
+                sampling_parameters.connection_prob,
+                device=device,
+            )
+        )
+        new_input_adjacency[where, :] = input_sample
+
+    # Update output projection - insert new row
+    new_output_adjacency = topology.output.adjacency.cpu().numpy()
+    new_output_adjacency = np.insert(
+        new_output_adjacency, where, values=topology.output.fully_connected, axis=0
+    )
+    new_output_adjacency = torch.from_numpy(new_output_adjacency).to(device=device)
+
+    # Sample connections for the new node to output
+    if not topology.output.fully_connected:
+        output_sample = torch.bernoulli(
+            torch.full(
+                (topology.output.dim,),
+                sampling_parameters.connection_prob,
+                device=device,
+            )
+        )
+        new_output_adjacency[where, :] = output_sample
+
+    new_inner = InnerTopology(
         adjacency=new_adjacency.to(device=device),
         nonlinearity=new_nonlinearity.to(device=device),
         module=torch.ones((n_nodes + 1, 1), device=device),
     )
 
-    return new_topology
+    new_input = Projection(
+        dim=topology.input.dim,
+        n_nodes=n_nodes + 1,
+        device=device,
+        adjacency=new_input_adjacency,
+        weights=topology.input.weights,
+    )
+
+    new_output = Projection(
+        dim=topology.output.dim,
+        n_nodes=n_nodes + 1,
+        device=device,
+        adjacency=new_output_adjacency,
+        weights=topology.output.weights,
+    )
+
+    return Topology(input=new_input, output=new_output, inner=new_inner)
 
 
 def remove_node(
     topology: Topology, sampling_parameters: SamplingParameters, rng: random.Random
 ) -> Topology:
-    device = topology.adjacency.device
-    n_nodes = topology.adjacency.shape[0]
+    device = topology.inner.adjacency.device
+    n_nodes = topology.inner.adjacency.shape[0]
 
     # Ensure we have more than 2 nodes (input and output)
     # and choose a node to remove (avoid removing input or output nodes)
@@ -121,7 +177,7 @@ def remove_node(
     logging.info(f"Removing node {where}")
 
     # Create new adjacency matrix by removing the selected node
-    new_adjacency = topology.adjacency.cpu().numpy()
+    new_adjacency = topology.inner.adjacency.cpu().numpy()
     new_adjacency = np.delete(new_adjacency, where, axis=0)
     new_adjacency = np.delete(new_adjacency, where, axis=1)
 
@@ -144,24 +200,50 @@ def remove_node(
 
     # Remove nonlinearity for the removed node
     new_nonlinearity = torch.cat(
-        [topology.nonlinearity[:where], topology.nonlinearity[where + 1 :]]
+        [topology.inner.nonlinearity[:where], topology.inner.nonlinearity[where + 1 :]]
     )
 
-    # Create new topology
-    new_topology = Topology(
+    # Update input projection - remove row
+    new_input_adjacency = topology.input.adjacency.cpu().numpy()
+    new_input_adjacency = np.delete(new_input_adjacency, where, axis=0)
+    new_input_adjacency = torch.from_numpy(new_input_adjacency).to(device=device)
+
+    # Update output projection - remove row
+    new_output_adjacency = topology.output.adjacency.cpu().numpy()
+    new_output_adjacency = np.delete(new_output_adjacency, where, axis=0)
+    new_output_adjacency = torch.from_numpy(new_output_adjacency).to(device=device)
+
+    # Create new inner topology
+    new_inner = InnerTopology(
         adjacency=new_adjacency.to(device=device),
         nonlinearity=new_nonlinearity.to(device=device),
         module=torch.ones((n_nodes - 1, 1), device=device),
     )
 
-    return new_topology
+    new_input = Projection(
+        dim=topology.input.dim,
+        n_nodes=n_nodes - 1,
+        device=device,
+        adjacency=new_input_adjacency,
+        weights=topology.input.weights,
+    )
+
+    new_output = Projection(
+        dim=topology.output.dim,
+        n_nodes=n_nodes - 1,
+        device=device,
+        adjacency=new_output_adjacency,
+        weights=topology.output.weights,
+    )
+
+    return Topology(input=new_input, output=new_output, inner=new_inner)
 
 
 def add_edge(
     topology: Topology, sampling_parameters: SamplingParameters, rng: random.Random
 ) -> Topology:
-    n_nodes = topology.adjacency.shape[0]
-    device = topology.adjacency.device
+    n_nodes = topology.inner.adjacency.shape[0]
+    device = topology.inner.adjacency.device
 
     sampling_probs = construct_sampling_mask(
         n_nodes,
@@ -170,7 +252,7 @@ def add_edge(
         device,
     )
     # set probs to 0 for all edges that already exist
-    sampling_probs = torch.where(topology.adjacency, 0, sampling_probs)
+    sampling_probs = torch.where(topology.inner.adjacency, 0, sampling_probs)
 
     # get indices for potential new edges
     potential_edges = torch.nonzero(sampling_probs)
@@ -181,39 +263,43 @@ def add_edge(
     logging.info(f"Adding edge between {add_edge[0]} and {add_edge[1]}")
 
     # create new adjacency matrix
-    new_adjacency = topology.adjacency.clone()
+    new_adjacency = topology.inner.adjacency.clone()
     new_adjacency[add_edge] = 1
 
-    return Topology(
+    new_inner = InnerTopology(
         adjacency=new_adjacency,
-        nonlinearity=topology.nonlinearity,
-        module=topology.module,
+        nonlinearity=topology.inner.nonlinearity,
+        module=topology.inner.module,
     )
+
+    return Topology(input=topology.input, output=topology.output, inner=new_inner)
 
 
 def remove_edge(topology: Topology, rng: random.Random) -> Topology:
     # get indices for existing edges
-    existing_edges = torch.nonzero(topology.adjacency)
+    existing_edges = torch.nonzero(topology.inner.adjacency)
 
     # sample a random edge
     remove_edge = rng.choice(existing_edges)
 
     # create new adjacency matrix
-    new_adjacency = topology.adjacency.clone()
+    new_adjacency = topology.inner.adjacency.clone()
     new_adjacency[remove_edge] = 0
 
-    return Topology(
+    new_inner = InnerTopology(
         adjacency=new_adjacency,
-        nonlinearity=topology.nonlinearity,
-        module=topology.module,
+        nonlinearity=topology.inner.nonlinearity,
+        module=topology.inner.module,
     )
+
+    return Topology(input=topology.input, output=topology.output, inner=new_inner)
 
 
 def move_edge(
     topology: Topology, sampling_parameters: SamplingParameters, rng: random.Random
 ) -> Topology:
-    n_nodes = topology.adjacency.shape[0]
-    device = topology.adjacency.device
+    n_nodes = topology.inner.adjacency.shape[0]
+    device = topology.inner.adjacency.device
 
     sampling_probs = construct_sampling_mask(
         n_nodes,
@@ -222,10 +308,10 @@ def move_edge(
         device,
     )
     # set probs to 0 for all edges that already exist
-    sampling_probs = torch.where(topology.adjacency, 0, sampling_probs)
+    sampling_probs = torch.where(topology.inner.adjacency, 0, sampling_probs)
 
     # get indices for existing edges
-    existing_edges = torch.nonzero(topology.adjacency)
+    existing_edges = torch.nonzero(topology.inner.adjacency)
 
     # sample a random edge - this is the edge to move
     remove_edge = rng.choice(existing_edges)
@@ -235,15 +321,17 @@ def move_edge(
     add_edge = rng.choice(potential_edges)
 
     # create new adjacency matrix
-    new_adjacency = topology.adjacency.clone()
+    new_adjacency = topology.inner.adjacency.clone()
     new_adjacency[remove_edge] = 0
     new_adjacency[add_edge] = 1
 
-    return Topology(
+    new_inner = InnerTopology(
         adjacency=new_adjacency,
-        nonlinearity=topology.nonlinearity,
-        module=topology.module,
+        nonlinearity=topology.inner.nonlinearity,
+        module=topology.inner.module,
     )
+
+    return Topology(input=topology.input, output=topology.output, inner=new_inner)
 
 
 def manipulate_topology(
@@ -279,7 +367,7 @@ def duplicate_block(
     rng: random.Random,
 ) -> Topology:
     # Get the adjacency matrix
-    adjacency = topology.adjacency
+    adjacency = topology.inner.adjacency
     device = adjacency.device
     n_nodes = adjacency.shape[0]
 
@@ -330,17 +418,49 @@ def duplicate_block(
 
     new_nonlinearity = torch.cat(
         [
-            topology.nonlinearity[:end_idx],
-            topology.nonlinearity[block_slice],
-            topology.nonlinearity[end_idx:],
+            topology.inner.nonlinearity[:end_idx],
+            topology.inner.nonlinearity[block_slice],
+            topology.inner.nonlinearity[end_idx:],
         ]
     )
 
-    return Topology(
+    # Update input projection - duplicate corresponding rows
+    new_input_adjacency = torch.zeros((new_size, topology.input.dim), device=device)
+    new_input_adjacency[:n_nodes, :] = topology.input.adjacency
+    new_input_adjacency[dup_block_slice, :] = topology.input.adjacency[block_slice, :]
+    # Re-sort to match the adjacency matrix ordering
+    new_input_adjacency = new_input_adjacency[indices, :]
+
+    # Update output projection - duplicate corresponding rows
+    new_output_adjacency = torch.zeros((new_size, topology.output.dim), device=device)
+    new_output_adjacency[:n_nodes, :] = topology.output.adjacency
+    new_output_adjacency[dup_block_slice, :] = topology.output.adjacency[block_slice, :]
+    # Re-sort to match the adjacency matrix ordering
+    new_output_adjacency = new_output_adjacency[indices, :]
+
+    new_inner = InnerTopology(
         adjacency=new_adjacency,
         nonlinearity=new_nonlinearity,
         module=torch.ones((new_size, 1), device=device),
     )
+
+    new_input = Projection(
+        dim=topology.input.dim,
+        n_nodes=new_size,
+        device=device,
+        adjacency=new_input_adjacency,
+        weights=topology.input.weights,
+    )
+
+    new_output = Projection(
+        dim=topology.output.dim,
+        n_nodes=new_size,
+        device=device,
+        adjacency=new_output_adjacency,
+        weights=topology.output.weights,
+    )
+
+    return Topology(input=new_input, output=new_output, inner=new_inner)
 
 
 def invert_block(
@@ -349,7 +469,7 @@ def invert_block(
     rng: random.Random,
 ) -> Topology:
     """Reverses the direction of the connections within a block of the adjacency matrix"""
-    adjacency = topology.adjacency
+    adjacency = topology.inner.adjacency
     n_nodes = adjacency.shape[0]
 
     if n_nodes < 3:
@@ -382,14 +502,16 @@ def invert_block(
         block_slice, block_slice
     ].transpose(0, 1)
 
-    new_nonlinearity = topology.nonlinearity.clone()
+    new_nonlinearity = topology.inner.nonlinearity.clone()
     new_nonlinearity[block_slice] = new_nonlinearity[block_slice].flip(0)
 
-    return Topology(
+    new_inner = InnerTopology(
         adjacency=new_adjacency,
         nonlinearity=new_nonlinearity,
-        module=topology.module,
+        module=topology.inner.module,
     )
+
+    return Topology(input=topology.input, output=topology.output, inner=new_inner)
 
 
 def mutate_topology(
@@ -426,12 +548,12 @@ def crossover(topology1: Topology, topology2: Topology, rng: random.Random) -> T
     duplicating it in the other topology. Returns the crossed-over topology.
     """
     # get adjacency matrices
-    adjacency1 = topology1.adjacency
-    adjacency2 = topology2.adjacency
+    adjacency1 = topology1.inner.adjacency
+    adjacency2 = topology2.inner.adjacency
 
     # get nonlinearities
-    nonlinearity1 = topology1.nonlinearity
-    nonlinearity2 = topology2.nonlinearity
+    nonlinearity1 = topology1.inner.nonlinearity
+    nonlinearity2 = topology2.inner.nonlinearity
 
     # pad adjacency matrices so that they have the same size
     size = max(adjacency1.shape[0], adjacency2.shape[0])
@@ -463,14 +585,14 @@ def crossover(topology1: Topology, topology2: Topology, rng: random.Random) -> T
 
     nonlinearity2[start_idx:end_idx] = nonlinearity1[start_idx:end_idx]
 
-    # create new topologies
-    new_topology2 = Topology(
+    # create new inner topology
+    new_inner = InnerTopology(
         adjacency=adjacency2,
         nonlinearity=nonlinearity2,
-        module=topology2.module,
+        module=topology2.inner.module,
     )
 
-    return new_topology2
+    return Topology(input=topology2.input, output=topology2.output, inner=new_inner)
 
 
 def crossover_topologies(

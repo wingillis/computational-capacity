@@ -1,17 +1,12 @@
-from typing import Union, List, Tuple
-
-import warnings
-
 import torch
+import xxhash
 import numpy as np
-import gymnasium as gym
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torch import nn
-from pydantic import BaseModel, ConfigDict, model_validator
-from scipy.sparse.csgraph import shortest_path
-from torch.distributions.multinomial import Multinomial
-import xxhash
+from typing import List, Tuple
+from dataclasses import dataclass, field
+from pydantic import BaseModel, ConfigDict
 
 
 class SineActivation(nn.Module):
@@ -36,17 +31,120 @@ NONLINEARITY_MAP = {
     6: SoftMinus,
 }
 
-class Topology(BaseModel):
+
+@dataclass
+class Projection:
+    dim: int
+    n_nodes: int
+    device: str | None = None
+    # (n_nodes, dim)
+    adjacency: torch.Tensor | None = None
+    weights: torch.Tensor | None = None
+
+    fully_connected: bool = field(default=False)
+
+    def __post_init__(self):
+        # if adjacency is not provided, assume fully connected
+        self.fully_connected = self.adjacency is None or (1 - self.adjacency).sum() == 0
+
+        if self.fully_connected:
+            self.adjacency = torch.ones(
+                (self.n_nodes, self.dim), dtype=torch.bool, device=self.device
+            )
+
+    @property
+    def hash(self) -> str:
+        """
+        Generate a hash for the given adjacency matrix. Provides a unique
+        string for each adjacency matrix.
+        """
+        return xxhash.xxh64_hexdigest(self.bytes)
+
+    @property
+    def bytes(self) -> bytes:
+        return b"".join(
+            m.detach().cpu().numpy().tobytes()
+            for m in (self.adjacency, self.weights)
+            if m is not None
+        )
+
+
+# proposed data structure for representing the inner network topology
+@dataclass
+class InnerTopology:
+    # (n_nodes, n_nodes)
+    adjacency: torch.Tensor
+    # (n_nodes, n_nonlinearities)
+    nonlinearity: torch.Tensor
+    # (n_nodes, 1) - optional. If not provided, module is created.
+    module: torch.Tensor | None = None
+    # (n_nodes, n_nodes) - optional. Not produced if not provided.
+    weights: torch.Tensor | None = None
+
+    def __post_init__(self):
+        if self.module is None:
+            self.module = torch.ones(
+                (self.adjacency.shape[0], 1),
+                dtype=torch.bool,
+                device=self.adjacency.device,
+            )
+
+    @property
+    def hash(self) -> str:
+        """
+        Generate a hash for the given matrices. Provides a unique
+        string for each matrix configuration. Allows for computationally cheap
+        deduplication of networks with the same topology.
+
+        Returns:
+            str: The hexadecimal digest of the hash.
+        """
+        return xxhash.xxh64_hexdigest(self.bytes)
+
+    @property
+    def bytes(self) -> bytes:
+        # combine byte representations of the matrices
+        return b"".join(
+            m.detach().cpu().numpy().tobytes()
+            for m in (self.adjacency, self.module, self.nonlinearity, self.weights)
+            if m is not None
+        )
+
+
+# proposed data structure for representing the full network topology
+@dataclass
+class Topology:
+    input: Projection
+    output: Projection
+    inner: InnerTopology
+
+    @property
+    def adjacencies(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (self.input.adjacency, self.inner.adjacency, self.output.adjacency)
+
+    @property
+    def hash(self) -> str:
+        return xxhash.xxh64_hexdigest(self.bytes)
+
+    @property
+    def bytes(self) -> bytes:
+        return b"".join(m.bytes for m in self)
+
+    def __iter__(self):
+        return iter((self.input, self.inner, self.output))
+
+
+class OldTopology(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # (n_nodes, n_nodes)
     adjacency: torch.Tensor | None = None
-    # (n_nodes, n_nodes)
-    weights: torch.Tensor | None = None
     # (n_nodes, 1)
     module: torch.Tensor | None = None
-    # (n_nodes, 1)
+    # (n_nodes, n_nonlinearities)
     nonlinearity: torch.Tensor | None = None
+    # (n_nodes, n_nodes)
+    weights: torch.Tensor | None = None
     
     def generate_hash(self) -> str:
         """
@@ -160,15 +258,6 @@ class Topology(BaseModel):
     #     )
 
 
-class MultiMatrixContainer(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    input: Topology  # input to RNN
-    output: Topology  # output of RNN
-    inner: Topology  # inner layers of RNN
-
-
-
 class Network(nn.Module):
     """
     A class representing a neural network with a specific architecture.
@@ -190,7 +279,7 @@ class Network(nn.Module):
         
         self.constructor_matrices = toplogy
         self.device = device
-        
+
 
 class ProgressiveRNN(Network):
     def __init__(
@@ -302,13 +391,10 @@ class ProgressiveRNN(Network):
 
         return out, state
 
-    def plot_matrices(self):
-        self.constructor_matrices.plot_matrices()
-
     def __repr__(self):
         return f"Network. Constructor matrices: {repr(self.constructor_matrices)}"
-    
-    
+
+
 class VanillaRNN(Network):
     def __init__(
         self,
