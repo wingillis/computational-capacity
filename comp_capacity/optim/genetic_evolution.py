@@ -13,7 +13,7 @@ from comp_capacity.repr.network import (
 )
 from comp_capacity.optim.random_sample import (
     sample_topology,
-    add_connectivity,
+    ensure_projection_connectivity,
     sample_nonlinearity_matrix,
     construct_sampling_mask,
     SamplingParameters,
@@ -79,9 +79,6 @@ def add_node(
     sample = torch.bernoulli(sampling_probs[:, where])
     new_adjacency[:, where] = sample
 
-    new_adjacency = add_connectivity(new_adjacency, sampling_probs, index=0)
-    new_adjacency = add_connectivity(new_adjacency.T, sampling_probs.T, index=n_nodes).T
-
     # insert nonlinearity for new node
     new_nonlinearity_row = sample_nonlinearity_matrix(
         n_nodes=1, n_nonlinearities=len(NONLINEARITY_MAP), device=device
@@ -97,12 +94,12 @@ def add_node(
     # Update input projection - insert new row
     new_input_adjacency = topology.input.adjacency.cpu().numpy()
     new_input_adjacency = np.insert(
-        new_input_adjacency, where, values=topology.input.fully_connected, axis=0
+        new_input_adjacency, where, values=0, axis=0
     )
     new_input_adjacency = torch.from_numpy(new_input_adjacency).to(device=device)
 
     # Sample connections for the new node from input
-    if not topology.input.fully_connected:
+    if not sampling_parameters.use_fully_connected_projections:
         input_sample = torch.bernoulli(
             torch.full(
                 (topology.input.dim,),
@@ -111,16 +108,19 @@ def add_node(
             )
         )
         new_input_adjacency[where, :] = input_sample
+    elif rng.random() < sampling_parameters.connection_prob:
+        new_input_adjacency[where, :] = 1
+
 
     # Update output projection - insert new row
     new_output_adjacency = topology.output.adjacency.cpu().numpy()
     new_output_adjacency = np.insert(
-        new_output_adjacency, where, values=topology.output.fully_connected, axis=0
+        new_output_adjacency, where, values=0, axis=0
     )
     new_output_adjacency = torch.from_numpy(new_output_adjacency).to(device=device)
 
     # Sample connections for the new node to output
-    if not topology.output.fully_connected:
+    if not sampling_parameters.use_fully_connected_projections:
         output_sample = torch.bernoulli(
             torch.full(
                 (topology.output.dim,),
@@ -129,6 +129,8 @@ def add_node(
             )
         )
         new_output_adjacency[where, :] = output_sample
+    elif rng.random() < sampling_parameters.connection_prob:
+        new_output_adjacency[where, :] = 1
 
     new_inner = InnerTopology(
         adjacency=new_adjacency.to(device=device),
@@ -138,7 +140,6 @@ def add_node(
 
     new_input = Projection(
         dim=topology.input.dim,
-        n_nodes=n_nodes + 1,
         device=device,
         adjacency=new_input_adjacency,
         weights=topology.input.weights,
@@ -146,13 +147,17 @@ def add_node(
 
     new_output = Projection(
         dim=topology.output.dim,
-        n_nodes=n_nodes + 1,
         device=device,
         adjacency=new_output_adjacency,
         weights=topology.output.weights,
     )
 
-    return Topology(input=new_input, output=new_output, inner=new_inner)
+    candidate = Topology(input=new_input, output=new_output, inner=new_inner)
+
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+
+    return candidate
 
 
 def remove_node(
@@ -188,12 +193,6 @@ def remove_node(
     if not sampling_parameters.recurrent:
         sampling_probs = torch.triu(sampling_probs, diagonal=1)
 
-    # Ensure connectivity from input to all nodes and from all nodes to output
-    new_adjacency = add_connectivity(new_adjacency, sampling_probs, index=0)
-    new_adjacency = add_connectivity(
-        new_adjacency.T, sampling_probs.T, index=n_nodes - 2
-    ).T
-
     # Remove nonlinearity for the removed node
     new_nonlinearity = torch.cat(
         [topology.inner.nonlinearity[:where], topology.inner.nonlinearity[where + 1 :]]
@@ -218,7 +217,6 @@ def remove_node(
 
     new_input = Projection(
         dim=topology.input.dim,
-        n_nodes=n_nodes - 1,
         device=device,
         adjacency=new_input_adjacency,
         weights=topology.input.weights,
@@ -226,13 +224,17 @@ def remove_node(
 
     new_output = Projection(
         dim=topology.output.dim,
-        n_nodes=n_nodes - 1,
         device=device,
         adjacency=new_output_adjacency,
         weights=topology.output.weights,
     )
 
-    return Topology(input=new_input, output=new_output, inner=new_inner)
+    candidate = Topology(input=new_input, output=new_output, inner=new_inner)
+
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+
+    return candidate
 
 
 def add_edge(
@@ -441,7 +443,6 @@ def duplicate_block(
 
     new_input = Projection(
         dim=topology.input.dim,
-        n_nodes=new_size,
         device=device,
         adjacency=new_input_adjacency,
         weights=topology.input.weights,
@@ -449,7 +450,6 @@ def duplicate_block(
 
     new_output = Projection(
         dim=topology.output.dim,
-        n_nodes=new_size,
         device=device,
         adjacency=new_output_adjacency,
         weights=topology.output.weights,

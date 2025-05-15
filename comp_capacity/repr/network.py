@@ -35,22 +35,19 @@ NONLINEARITY_MAP = {
 @dataclass
 class Projection:
     dim: int
-    n_nodes: int
-    device: str | None = None
     # (n_nodes, dim)
-    adjacency: torch.Tensor | None = None
+    adjacency: torch.Tensor 
+    device: str | None = None
     weights: torch.Tensor | None = None
 
     fully_connected: bool = field(init=False)
 
     def __post_init__(self):
-        # if adjacency is not provided, assume fully connected
-        self.fully_connected = self.adjacency is None or (1 - self.adjacency.int()).sum() == 0
+        # check if projection is fully connected - i.e., all projection dims are connected single nodes
+        mask = self.adjacency.all(dim=0)
+        not_fully_connected = self.adjacency.any(dim=0) & ~mask
 
-        if self.fully_connected:
-            self.adjacency = torch.ones(
-                (self.n_nodes, self.dim), dtype=torch.bool, device=self.device
-            )
+        self.fully_connected = not_fully_connected.sum() == 0
 
     @property
     def hash(self) -> str:
@@ -119,6 +116,10 @@ class InnerTopology:
 # proposed data structure for representing the full network topology
 @dataclass
 class Topology:
+    """
+    Class representing the full network topology. Using this class, a complete
+    neural network can be constructed.
+    """
     input: Projection
     output: Projection
     inner: InnerTopology
@@ -187,85 +188,6 @@ class OldTopology(BaseModel):
             self.nonlinearity.shape[0],
         )
 
-    # @staticmethod
-    # def from_concat(concat: torch.Tensor, n_nodes: int):
-    #     """
-    #     Args:
-    #         concat (torch.Tensor): Concatenated matrix.
-    #         sizes (tuple): Column dimension of each individual matrix.
-    #     """
-    #     adjacency = concat[:, : n_nodes]
-    #     weights = concat[:, n_nodes:-2]
-    #     module = concat[:, -2]
-    #     nonlinearity = concat[:, -1]
-    #     return Topology(
-    #         weights=weights, module=module, nonlinearity=nonlinearity, adjacency=adjacency
-    #     )
-
-    # @model_validator(mode='after')
-    # def check_matrices(self):
-    #     if self.weights is None:
-    #         self.weights = torch.zeros(self.adjacency.shape, dtype=torch.float32)
-
-    # def concat(self) -> tuple[torch.Tensor, int]:
-    #     """Returns:
-    #     (torch.Tensor) Concatenated matrices
-    #     (int) Column dimension of the adjacency matrix
-    #     """
-    #     return (
-    #         torch.cat((self.adjacency, self.weights, self.module, self.nonlinearity), dim=1),
-    #         len(self.adjacency),
-    #     )
-
-    # def plot_matrices(self):
-    #     fig, axs = plt.subplots(1, 3, figsize=(9, 3))
-    #     for title, mtx, a in zip(
-    #         ["Connectivity", "Module", "Nonlinearity"],
-    #         [self.weights, self.module, self.nonlinearity],
-    #         axs.flat,
-    #     ):
-    #         a.imshow(mtx.cpu().numpy(), cmap="gray", aspect="auto")
-    #         a.set(title=title)
-
-    # def plot_graph_representation(self) -> plt.Figure:
-    #     import networkx as nx
-
-    #     g = nx.from_numpy_array(
-    #         self.weights.cpu().numpy(), create_using=nx.DiGraph
-    #     )
-    #     name_map = {
-    #         0: "Input",
-    #         len(self.weights) - 1: "Output",
-    #     }
-    #     g = nx.relabel_nodes(g, name_map)
-    #     edge_label = {}
-
-    #     _reverse_map = {v: k for k, v in name_map.items()}
-    #     for edge in g.edges:
-    #         input_edge = _reverse_map.get(edge[0], edge[0])
-    #         nl = self.nonlinearity[input_edge].cpu().numpy().argmax()
-    #         edge_label[edge] = NONLINEARITY_MAP[nl].__name__
-
-    #     pos = nx.spring_layout(g, k=0.8)
-    #     fig = plt.figure()
-    #     nx.draw(g, pos=pos, with_labels=True, connectionstyle="arc3,rad=0.1")
-    #     nx.draw_networkx_edge_labels(
-    #         g,
-    #         pos=pos,
-    #         edge_labels=edge_label,
-    #         font_color="red",
-    #         bbox={"facecolor": "white", "alpha": 1, "pad": -2, "linewidth": 0},
-    #     )
-    #     return fig
-
-    # def __repr__(self):
-    #     return (
-    #         f"Topology: \n"
-    #         f"  Connectivity -- shape: {self.weights.shape}, dtype: {self.weights.dtype}, device: {self.weights.device}, requires_grad: {self.weights.requires_grad}; \n"
-    #         f"  Module       -- shape: {self.module.shape}, dtype: {self.module.dtype}, device: {self.module.device}, requires_grad: {self.module.requires_grad}; \n"
-    #         f"  Nonlinearity -- shape: {self.nonlinearity.shape}, dtype: {self.nonlinearity.dtype}, device: {self.nonlinearity.device}, requires_grad: {self.nonlinearity.requires_grad}; \n"
-    #     )
-
 
 class Network(nn.Module):
     """
@@ -293,22 +215,22 @@ class Network(nn.Module):
 class ProgressiveRNN(Network):
     def __init__(
         self,
-        matrices: Topology,
+        topology: Topology,
         input_dim: int,
         output_dim: int,
         device: str | None = None,
     ):
         super().__init__(
-            toplogy=matrices,
+            toplogy=topology,
             device=device,
         )
 
-        self.adj_matrix = matrices.adjacency
+        self.adj_matrix = topology.inner.adjacency
 
         self.input_dim = input_dim
         self.output_dim = output_dim
 
-        self.network = self.generate_network(matrices, input_dim, output_dim, device)
+        self.network = self.generate_network(topology, input_dim, output_dim, device)
 
         # initialize weights with xavier uniform
         self.apply(self._init_weights)

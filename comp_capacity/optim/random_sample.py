@@ -1,6 +1,8 @@
 import torch
 import random
+import logging
 import numpy as np
+from typing import Literal
 from pydantic import BaseModel, Field
 from torch.distributions import Multinomial
 from scipy.sparse.csgraph import shortest_path
@@ -16,8 +18,8 @@ class SamplingParameters(BaseModel):
     connection_prob: float
     recurrent: bool
     # flag to allow modification of input/output projections
-    # for now, I keep it off because it can make the search space too large
-    modify_projections: bool = False
+    # for now, I keep it on because otherwise the search space can be too large
+    use_fully_connected_projections: bool = True
     # this parameter is for random sampling only
     increase_node_prob: float = Field(gt=0, lt=1, default=0.1)
 
@@ -69,44 +71,103 @@ def sample_nonlinearity_matrix(
     return sampler.sample((n_nodes,)).to(device=device, dtype=torch.bool)
 
 
-def add_connectivity(adj_matrix, orig_mask, index=0):
+def ensure_projection_connectivity(topology: Topology, parameters: SamplingParameters, projection_type: Literal["input", "output"]) -> Topology:
     """
     Ensure every node is reachable from the `index` node by repeatedly
     adding one edge from the reachable set to the first unreachable node.
+
+    Args:
+        topology (Topology): The topology to check connectivity.
+        parameters (SamplingParameters): The sampling parameters.
+        index (int): Indicates which node to ensure connectivity from.
+    Returns:
+        Topology: The updated topology.
     """
-    adj_matrix = adj_matrix.clone()
-    orig_mask = orig_mask.cpu().numpy() > 0
+    device = topology.inner.adjacency.device
+
+    # step 1: collapse input projection onto n_node dimension
+    input_row = topology.input.adjacency.any(dim=1)
+    # step 2: collapse output projection onto n_node dimension
+    output_row = topology.output.adjacency.any(dim=1)
+
+    # add input and output rows to adjacency matrix
+    new_adjacency = torch.zeros(
+        topology.inner.adjacency.shape[0] + 2,
+        topology.inner.adjacency.shape[0] + 2,
+        dtype=torch.bool,
+        device=device,
+    )
+
+    new_adjacency[0, 1 :-1] = input_row
+    new_adjacency[1 : -1, -1] = output_row
+    new_adjacency[1 : -1, 1 : -1] = topology.inner.adjacency
+
+    assert new_adjacency[:, 0].sum() == 0
+    assert new_adjacency[-1, :].sum() == 0
+
+    probs = construct_sampling_mask(
+        n_nodes=new_adjacency.shape[0],
+        sampling_parameters=parameters,
+        device=device,
+    )
+
+    node_index = 0
+
+    if projection_type == "output":
+        new_adjacency = new_adjacency.T
+        probs = probs.T
+        logging.info("Running connectivity check for output projection")
+    else:
+        logging.info("Running connectivity check for input projection")
+
+    probs_mask = probs.cpu().numpy() > 0
+
     while True:
         # 1) compute reachability
-        dist = shortest_path(adj_matrix.cpu().numpy(), directed=True, indices=index)
+        dist = shortest_path(new_adjacency.cpu().numpy(), directed=True, indices=node_index)
 
+        # 2) find unreachable nodes
         unreachable = np.where(np.isinf(dist))[0]
-        if index == 0:
-            unreachable = unreachable[unreachable != len(adj_matrix) - 1]
-        elif index == len(adj_matrix) - 1:
-            unreachable = unreachable[unreachable != 0]
+        # ignore output node - we don't want to connect the input to the output
+        unreachable = unreachable[unreachable != len(new_adjacency) - 1]
 
         # if all nodes are reachable, finish
         if len(unreachable) == 0:
             break
+        else:
+            logging.info(f"Unreachable nodes: {unreachable}")
 
+        # 3) sample new connection with node closest to input node
+        #    - only consider nodes that are reachable
         node = unreachable[0]
-        mask = np.isfinite(dist) & orig_mask[:, node]
+        mask = np.isfinite(dist) & probs_mask[:, node]
 
         # guard against empty mask
         if not mask.any():
             raise RuntimeError(f"No reachable origin to connect node {node!r}")
 
         # sample exactly one new incoming edge
-        probs = torch.tensor(mask, dtype=torch.float, device=adj_matrix.device)
+        probs = torch.tensor(mask, dtype=torch.float, device=device)
         sample_connection = (
             Multinomial(total_count=1, probs=probs).sample().to(dtype=torch.bool)
         )
 
         # combine with existing connections
-        adj_matrix[:, node] = sample_connection | adj_matrix[:, node]
+        new_adjacency[:, node] = sample_connection | new_adjacency[:, node]
 
-    return adj_matrix
+    logging.info(f"Shortest path distance: {dist}")
+
+    # create new Topology object
+    return Topology(
+        input=topology.input,
+        output=topology.output,
+        inner=InnerTopology(
+            adjacency=new_adjacency[1:-1, 1:-1].to(device=device),
+            nonlinearity=topology.inner.nonlinearity,
+            module=topology.inner.module,
+            weights=topology.inner.weights,
+        ),
+    )
 
 
 def sample_adjacency_matrix(
@@ -114,7 +175,7 @@ def sample_adjacency_matrix(
     sampling_parameters: SamplingParameters,
     seed: int | None = None,
     device: str | None = None,
-):
+) -> torch.Tensor:
     """
     Generate a random connectivity matrix of shape (n_nodes, n_nodes).
     The connectivity is generated using a Bernoulli distribution with probability p.
@@ -135,12 +196,6 @@ def sample_adjacency_matrix(
     # fill boolean values with probabilities
     sample = torch.bernoulli(probs).to(dtype=torch.bool)
 
-    # make sure each node is reachable from the input node
-    sample = add_connectivity(sample, probs, index=0)
-
-    # make sure output node is reachable from all nodes
-    sample = add_connectivity(sample.T, probs.T, index=n_nodes - 1).T
-
     return sample
 
 
@@ -157,21 +212,38 @@ def sample_projection(
     else:
         rng = random.Random()
 
+    if sampling_parameters.use_fully_connected_projections:
+        # sampling probs are just over nodes, rather than projection dims
+        sampling_dim = (n_nodes, )
+    else:
+        # sampling probs are over everything
+        sampling_dim = (n_nodes, dim)
+
     connectivity = torch.bernoulli(
         torch.full(
-            (n_nodes, dim),
+            sampling_dim,
             fill_value=sampling_parameters.connection_prob,
             device=device,
         )
     ).to(dtype=torch.bool)
 
-    # make sure each column has at least one connection
-    for i in range(dim):
-        if not connectivity[:, i].any():
-            j = rng.randint(0, n_nodes - 1)
-            connectivity[j, i] = True
+    if sampling_parameters.use_fully_connected_projections:
+        if not connectivity.any():
+            node_index = rng.randint(0, n_nodes - 1)
+            connectivity[node_index] = True
 
-    return Projection(dim=dim, n_nodes=n_nodes, device=device, adjacency=connectivity)
+        # expand connectivity to include all projection dims
+        connectivity = connectivity.unsqueeze(1).repeat(1, dim)
+    else:
+        # make sure each projection dimension has at least one connection
+        for i in range(dim):
+            if not connectivity[:, i].any():
+                j = rng.randint(0, n_nodes - 1)
+                connectivity[j, i] = True
+
+    assert connectivity.shape == (n_nodes, dim)
+
+    return Projection(dim=dim, device=device, adjacency=connectivity)
 
 
 def sample_topology(
@@ -203,30 +275,35 @@ def sample_topology(
         nonlinearity=nonlinearity,
     )
 
-    if not sampling_parameters.modify_projections:
-        input_projection = Projection(dim=input_dim, n_nodes=n_nodes, device=device)
-        output_projection = Projection(dim=output_dim, n_nodes=n_nodes, device=device)
-    else:
-        input_projection = sample_projection(
-            n_nodes=n_nodes,
-            dim=input_dim,
-            sampling_parameters=sampling_parameters,
-            device=device,
-            rng=rng,
-        )
-        output_projection = sample_projection(
-            n_nodes=n_nodes,
-            dim=output_dim,
-            sampling_parameters=sampling_parameters,
-            device=device,
-            rng=rng,
-        )
+    input_projection = sample_projection(
+        n_nodes=n_nodes,
+        dim=input_dim,
+        sampling_parameters=sampling_parameters,
+        device=device,
+        rng=rng,
+    )
 
-    return Topology(
+    output_projection = sample_projection(
+        n_nodes=n_nodes,
+        dim=output_dim,
+        sampling_parameters=sampling_parameters,
+        device=device,
+        rng=rng,
+    )
+
+    candidate = Topology(
         input=input_projection,
         output=output_projection,
         inner=matrices,
     )
+
+    # make sure each node is reachable from the input node
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+
+    # make sure output node is reachable from all nodes
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+
+    return candidate
 
 
 def random_step(

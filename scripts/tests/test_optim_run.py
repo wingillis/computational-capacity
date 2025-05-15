@@ -12,7 +12,7 @@ def test_random_optim_run():
         connection_prob=0.5,
         recurrent=True,
         increase_node_prob=1 / 100,
-        modify_projections=False,
+        use_fully_connected_projections=True,
     )
     run(
         n_networks=10,
@@ -31,7 +31,7 @@ def test_genetic_optim_run():
         connection_prob=0.5,
         recurrent=True,
         increase_node_prob=1 / 100,
-        modify_projections=False,
+        use_fully_connected_projections=True,
     )
     evolution_parameters = EvolutionParameters(
         survival_rate=0.5,
