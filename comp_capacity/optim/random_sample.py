@@ -97,30 +97,36 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
         dtype=torch.bool,
         device=device,
     )
+    n_nodes = new_adjacency.shape[0]
 
-    new_adjacency[0, 1 :-1] = input_row
-    new_adjacency[1 : -1, -1] = output_row
-    new_adjacency[1 : -1, 1 : -1] = topology.inner.adjacency
+    new_adjacency[0, 1:-1] = input_row
+    new_adjacency[1:-1, -1] = output_row
+    new_adjacency[1:-1, 1:-1] = topology.inner.adjacency
 
     assert new_adjacency[:, 0].sum() == 0
     assert new_adjacency[-1, :].sum() == 0
 
     probs = construct_sampling_mask(
-        n_nodes=new_adjacency.shape[0],
+        n_nodes=n_nodes,
         sampling_parameters=parameters,
         device=device,
     )
 
-    node_index = 0
-
     if projection_type == "output":
+        node_index = n_nodes - 1
         new_adjacency = new_adjacency.T
         probs = probs.T
         logging.info("Running connectivity check for output projection")
     else:
+        node_index = 0
         logging.info("Running connectivity check for input projection")
 
     probs_mask = probs.cpu().numpy() > 0
+    # because this adjacency matrix contains input and output nodes, we need to
+    # mask out connections between them
+    probs_mask[0, -1] = 0
+    probs_mask[:, 0] = 0
+    probs_mask[-1, :] = 0
 
     while True:
         # 1) compute reachability
@@ -128,8 +134,12 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
 
         # 2) find unreachable nodes
         unreachable = np.where(np.isinf(dist))[0]
-        # ignore output node - we don't want to connect the input to the output
-        unreachable = unreachable[unreachable != len(new_adjacency) - 1]
+        if node_index == 0:
+            # ignore input node - we don't want to connect the input to the output
+            unreachable = unreachable[unreachable != n_nodes - 1]
+        elif node_index == n_nodes - 1:
+            # ignore output node - we don't want to connect the input to the output
+            unreachable = unreachable[unreachable != 0]
 
         # if all nodes are reachable, finish
         if len(unreachable) == 0:
@@ -149,25 +159,32 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
         # sample exactly one new incoming edge
         probs = torch.tensor(mask, dtype=torch.float, device=device)
         sample_connection = (
-            Multinomial(total_count=1, probs=probs).sample().to(dtype=torch.bool)
+            Multinomial(total_count=1, probs=probs).sample().to(dtype=torch.bool, device=device)
         )
 
         # combine with existing connections
-        new_adjacency[:, node] = sample_connection | new_adjacency[:, node]
+        new_adjacency[:, node] = (sample_connection | new_adjacency[:, node])
+
+    if projection_type == "output":
+        new_adjacency = new_adjacency.T
 
     logging.info(f"Shortest path distance: {dist}")
 
+    inner_adjacency = new_adjacency[1:-1, 1:-1]
+
     # create new Topology object
-    return Topology(
+    candidate = Topology(
         input=topology.input,
         output=topology.output,
         inner=InnerTopology(
-            adjacency=new_adjacency[1:-1, 1:-1].to(device=device),
+            adjacency=inner_adjacency.to(device=device),
             nonlinearity=topology.inner.nonlinearity,
             module=topology.inner.module,
             weights=topology.inner.weights,
         ),
     )
+
+    return candidate
 
 
 def sample_adjacency_matrix(
@@ -227,10 +244,10 @@ def sample_projection(
         )
     ).to(dtype=torch.bool)
 
+
     if sampling_parameters.use_fully_connected_projections:
-        if not connectivity.any():
-            node_index = rng.randint(0, n_nodes - 1)
-            connectivity[node_index] = True
+        # always connect input to first node
+        connectivity[0] = True
 
         # expand connectivity to include all projection dims
         connectivity = connectivity.unsqueeze(1).repeat(1, dim)
@@ -240,6 +257,23 @@ def sample_projection(
             if not connectivity[:, i].any():
                 j = rng.randint(0, n_nodes - 1)
                 connectivity[j, i] = True
+        if not connectivity[0].any():
+            sample = torch.bernoulli(
+                torch.full(
+                    (dim, ),
+                    fill_value=sampling_parameters.connection_prob,
+                    device=device,
+                )
+            ).to(dtype=torch.bool)
+            while sample.sum() == 0:
+                sample = torch.bernoulli(
+                    torch.full(
+                        (dim, ),
+                        fill_value=sampling_parameters.connection_prob,
+                        device=device,
+                    )
+                ).to(dtype=torch.bool)
+            connectivity[0, sample] = True
 
     assert connectivity.shape == (n_nodes, dim)
 

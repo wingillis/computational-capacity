@@ -17,6 +17,8 @@ def test_random_optim_run():
     run(
         n_networks=10,
         batch_size=10,
+        gym_env_name="NextStepFunction-v0",
+        gym_env_kwargs=dict(function="sinusoidal", steps=10),
         n_steps=10,
         n_init_nodes=5,
         algorithm="random_sampling",
@@ -41,6 +43,8 @@ def test_genetic_optim_run():
     run(
         n_networks=10,
         batch_size=10,
+        gym_env_name="NextStepFunction-v0",
+        gym_env_kwargs=dict(function="sinusoidal", steps=10),
         n_steps=10,
         n_init_nodes=5,
         algorithm="genetic_evolution",

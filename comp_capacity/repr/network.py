@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torch import nn
-from typing import List, Tuple
+from typing import List, Tuple, Literal
 from dataclasses import dataclass, field
 from pydantic import BaseModel, ConfigDict
 
@@ -216,47 +216,74 @@ class ProgressiveRNN(Network):
     def __init__(
         self,
         topology: Topology,
-        input_dim: int,
-        output_dim: int,
         device: str | None = None,
+        weight_init: Literal["kaiming", "binary", "normal", "uniform"] = "kaiming",
     ):
         super().__init__(
             toplogy=topology,
             device=device,
         )
 
-        self.adj_matrix = topology.inner.adjacency
+        self.topology = topology
+        self.weight_init = weight_init
+        input_mask = topology.input.adjacency.any(dim=1)
+        output_mask = topology.output.adjacency.any(dim=1)
 
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.input_dim = topology.input.dim
+        self.output_dim = topology.output.dim
 
-        self.network = self.generate_network(topology, input_dim, output_dim, device)
+        new_adjacency = torch.zeros(
+            (topology.inner.adjacency.shape[0] + 2, ) * 2,
+            dtype=torch.bool,
+            device=device,
+        )
+        new_adjacency[0, 1 : -1] = input_mask
+        new_adjacency[1 : -1, -1] = output_mask
+        new_adjacency[1 : -1, 1 : -1] = topology.inner.adjacency
+        self.adj_matrix = new_adjacency
+        self.input_mask = new_adjacency[0]
+        self.output_mask = new_adjacency[:, -1]
+
+        self.network = self.generate_network()
 
         # initialize weights with xavier uniform
         self.apply(self._init_weights)
 
     @torch.no_grad()
     def _init_weights(self, module):
+        if self.weight_init == "kaiming":
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight)
+                if module.bias is not None:
+                    nn.init.normal_(module.bias, std=0.1)
+        elif self.weight_init == "binary":
+            if isinstance(module, nn.Linear):
+                with torch.no_grad():
+                    module.weight = torch.bernoulli(torch.ones_like(module.weight) * 0.5)
+                if module.bias is not None:
+                    with torch.no_grad():
+                        module.bias = torch.bernoulli(torch.ones_like(module.bias) * 0.5)
+        elif self.weight_init == "normal":
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight)
+                if module.bias is not None:
+                    nn.init.normal_(module.bias)
+        elif self.weight_init == "uniform":
+            if isinstance(module, nn.Linear):
+                nn.init.uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.uniform_(module.bias)
+        else:
+            raise ValueError(f"Invalid weight initialization: {self.weight_init}")
 
-        if isinstance(module, nn.Linear):
-            nn.init.kaiming_normal_(module.weight)
-            if module.bias is not None:
-                nn.init.normal_(module.bias, std=0.1)
-
-    @staticmethod
     def generate_network(
-        matrices: Topology,
-        input_dim: int,
-        output_dim: int,
-        device: str | None = None,
+        self,
     ) -> nn.Module:
         """
         Generate a network from the given matrices.
 
         Args:
             matrices (Topology): The container holding the weights, module, and nonlinearity matrices.
-            input_dim (int): The input dimensionality.
-            output_dim (int): The output dimensionality.
             device (str, optional): The device to create the network on. Defaults to None.
 
         Returns:
@@ -265,26 +292,22 @@ class ProgressiveRNN(Network):
         # input and output dimensionality can be saved as instance properties
         network = nn.ModuleDict()
 
-        # for each node N, find number of input connections:
-        for N, outputs in enumerate(matrices.adjacency):
-            inputs = matrices.adjacency[:, N]
+        # TODO: for future - add nonlinearities to oinput and output layers
+        network["input"] = nn.Linear(self.input_dim, self.input_mask.sum())
+        network["output"] = nn.Linear(self.output_mask.sum(), self.output_dim)
 
+        # for each node N, find number of input connections:
+        for N, inputs in enumerate(self.adj_matrix.T[1:-1], start=1):
             # find nonlinearity from map - argmax specifies location of nonlinearity in one-hot encoded matrix
             nonlinearity_fun = NONLINEARITY_MAP[
-                matrices.nonlinearity[N].cpu().numpy()[0]
+                self.topology.inner.nonlinearity[N - 1].cpu().numpy()[0]
             ]
-
-            if N == 0:
-                layer = nn.Linear(input_dim, outputs.sum())
-            elif N == len(matrices.adjacency) - 1:
-                layer = nn.Linear(inputs.sum(), output_dim)
-            else:
-                layer = nn.Linear(inputs.sum(), 1)
             network[f"{N}"] = nn.Sequential(
-                layer,
+                nn.Linear(inputs.sum(), 1),
                 nonlinearity_fun(),
             )
-        return network.to(device)
+
+        return network.to(self.device)
 
     def forward(
         self,
@@ -303,27 +326,25 @@ class ProgressiveRNN(Network):
         batch, *_ = X.shape
 
         if state is None:
+            # initialize state with zeros
             state = torch.zeros(
                 (batch, len(self.adj_matrix)), device=self.adj_matrix.device
             )
 
         # run through input node:
-        state[:, self.adj_matrix[0]] = self.network["0"](X)
+        state[:, self.input_mask] = self.network["input"](X)
 
-        for node in range(1, len(self.adj_matrix) - 1):
+        for node in range(1, len(self.adj_matrix[1:-1]) + 1):
             # node receives inputs from following nodes:
             inputs = self.adj_matrix[:, node]
+
+            # run state through node
             state[:, node] = self.network[f"{node}"](state[:, inputs]).squeeze()
 
-        # run through output node:
-        node = len(self.adj_matrix) - 1
-        inputs = self.adj_matrix[:, -1]
-        out = self.network[f"{node}"](state[:, inputs])
+        # run projection out
+        out = self.network["output"](state[:, self.output_mask])
 
         return out, state
-
-    def __repr__(self):
-        return f"Network. Constructor matrices: {repr(self.constructor_matrices)}"
 
 
 class VanillaRNN(Network):

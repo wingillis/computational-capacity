@@ -616,6 +616,9 @@ def survival_selection(
     if not isinstance(fitness, torch.Tensor):
         logging.warning("Fitness is not a torch.Tensor, converting to one")
         fitness = torch.tensor(fitness)
+    
+    if fitness.ndim == 2:
+        fitness = fitness.mean(dim=1)
 
     # fitness proportional selection approach
     choices = torch.distributions.Categorical(probs=fitness).sample(
