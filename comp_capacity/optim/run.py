@@ -43,22 +43,7 @@ def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int) -> list[fl
         state = None
         module.eval()
         with torch.no_grad():
-            try:
-                action, state = module(obs, state=state)
-            except RuntimeError as e:
-                logging.error(f"Error in forward pass: {e}")
-                print("Observation")
-                print(obs)
-                print("Inputs projection")
-                print(module.constructor_matrices.input.adjacency)
-                print("Outputs projection")
-                print(module.constructor_matrices.output.adjacency)
-                print("Inner projection")
-                print(module.constructor_matrices.inner.adjacency)
-                for name, param in module.named_parameters():
-                    print(name)
-                    print(param)
-                raise e
+            action, state = module(obs, state=state)
             if is_categorical:
                 action = torch.distributions.Categorical(logits=action).sample()
             action = action.squeeze().cpu().numpy()
