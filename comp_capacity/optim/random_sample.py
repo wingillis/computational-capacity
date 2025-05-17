@@ -13,6 +13,7 @@ from comp_capacity.repr.network import (
     Projection,
 )
 
+logger = logging.getLogger(__name__)
 
 class SamplingParameters(BaseModel):
     connection_prob: float
@@ -71,7 +72,11 @@ def sample_nonlinearity_matrix(
     return sampler.sample((n_nodes,)).to(device=device, dtype=torch.bool)
 
 
-def ensure_projection_connectivity(topology: Topology, parameters: SamplingParameters, projection_type: Literal["input", "output"]) -> Topology:
+def ensure_projection_connectivity(
+    topology: Topology,
+    parameters: SamplingParameters,
+    projection_type: Literal["input", "output"],
+) -> Topology:
     """
     Ensure every node is reachable from the `index` node by repeatedly
     adding one edge from the reachable set to the first unreachable node.
@@ -116,10 +121,10 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
         node_index = n_nodes - 1
         new_adjacency = new_adjacency.T
         probs = probs.T
-        logging.info("Running connectivity check for output projection")
+        logger.info("Running connectivity check for output projection")
     else:
         node_index = 0
-        logging.info("Running connectivity check for input projection")
+        logger.info("Running connectivity check for input projection")
 
     probs_mask = probs.cpu().numpy() > 0
     # because this adjacency matrix contains input and output nodes, we need to
@@ -130,7 +135,9 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
 
     while True:
         # 1) compute reachability
-        dist = shortest_path(new_adjacency.cpu().numpy(), directed=True, indices=node_index)
+        dist = shortest_path(
+            new_adjacency.cpu().numpy(), directed=True, indices=node_index
+        )
 
         # 2) find unreachable nodes
         unreachable = np.where(np.isinf(dist))[0]
@@ -145,7 +152,7 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
         if len(unreachable) == 0:
             break
         else:
-            logging.info(f"Unreachable nodes: {unreachable}")
+            logger.info(f"Unreachable nodes: {unreachable}")
 
         # 3) sample new connection with node closest to input node
         #    - only consider nodes that are reachable
@@ -159,16 +166,18 @@ def ensure_projection_connectivity(topology: Topology, parameters: SamplingParam
         # sample exactly one new incoming edge
         probs = torch.tensor(mask, dtype=torch.float, device=device)
         sample_connection = (
-            Multinomial(total_count=1, probs=probs).sample().to(dtype=torch.bool, device=device)
+            Multinomial(total_count=1, probs=probs)
+            .sample()
+            .to(dtype=torch.bool, device=device)
         )
 
         # combine with existing connections
-        new_adjacency[:, node] = (sample_connection | new_adjacency[:, node])
+        new_adjacency[:, node] = sample_connection | new_adjacency[:, node]
 
     if projection_type == "output":
         new_adjacency = new_adjacency.T
 
-    logging.info(f"Shortest path distance: {dist}")
+    logger.info(f"Shortest path distance: {dist}")
 
     inner_adjacency = new_adjacency[1:-1, 1:-1]
 
@@ -231,7 +240,7 @@ def sample_projection(
 
     if sampling_parameters.use_fully_connected_projections:
         # sampling probs are just over nodes, rather than projection dims
-        sampling_dim = (n_nodes, )
+        sampling_dim = (n_nodes,)
     else:
         # sampling probs are over everything
         sampling_dim = (n_nodes, dim)
@@ -243,7 +252,6 @@ def sample_projection(
             device=device,
         )
     ).to(dtype=torch.bool)
-
 
     if sampling_parameters.use_fully_connected_projections:
         # always connect input to first node
@@ -260,7 +268,7 @@ def sample_projection(
         if not connectivity[0].any():
             sample = torch.bernoulli(
                 torch.full(
-                    (dim, ),
+                    (dim,),
                     fill_value=sampling_parameters.connection_prob,
                     device=device,
                 )
@@ -268,7 +276,7 @@ def sample_projection(
             while sample.sum() == 0:
                 sample = torch.bernoulli(
                     torch.full(
-                        (dim, ),
+                        (dim,),
                         fill_value=sampling_parameters.connection_prob,
                         device=device,
                     )

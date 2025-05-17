@@ -19,6 +19,8 @@ from comp_capacity.optim.random_sample import (
     SamplingParameters,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class MutationType(Enum):
     NODE_MANIPULATION = "node_manipulation"
@@ -59,7 +61,7 @@ def add_node(
     device = topology.inner.adjacency.device
     where = rng.randint(0, n_nodes - 1)
 
-    logging.info(f"Adding node at {where}")
+    logger.info(f"Adding node at {where}")
 
     new_adjacency = topology.inner.adjacency.cpu().numpy()
     new_adjacency = np.insert(new_adjacency, where, values=0, axis=0)
@@ -170,12 +172,12 @@ def remove_node(
     # and choose a node to remove (avoid removing input or output nodes)
     if n_nodes <= 2:
         # Can't remove any more nodes, return original topology
-        logging.warning("Can't remove any more nodes, returning original topology")
+        logger.warning("Can't remove any more nodes, returning original topology")
         return topology
 
     where = rng.randint(0, n_nodes - 1)
 
-    logging.info(f"Removing node {where}")
+    logger.info(f"Removing node {where}")
 
     # Create new adjacency matrix by removing the selected node
     new_adjacency = topology.inner.adjacency.cpu().numpy()
@@ -257,7 +259,7 @@ def add_edge(
     # sample a random edge
     add_edge = rng.choice(potential_edges)
 
-    logging.info(f"Adding edge between {add_edge[0]} and {add_edge[1]}")
+    logger.info(f"Adding edge between {add_edge[0]} and {add_edge[1]}")
 
     # create new adjacency matrix
     new_adjacency = topology.inner.adjacency.clone()
@@ -369,7 +371,7 @@ def duplicate_block(
     n_nodes = adjacency.shape[0]
 
     if n_nodes < 3:
-        logging.warning("Can't duplicate block because there are less than 3 nodes")
+        logger.warning("Can't duplicate block because there are less than 3 nodes")
         return topology
 
     # Determine block size to duplicate (between 1 and n_nodes/3)
@@ -379,7 +381,7 @@ def duplicate_block(
     start_idx = rng.randint(0, n_nodes - block_size)
     end_idx = start_idx + block_size
 
-    logging.info(
+    logger.info(
         f"Duplicating block of size {block_size} at indices {start_idx} to {start_idx + block_size}"
     )
 
@@ -468,11 +470,11 @@ def invert_block(
     n_nodes = adjacency.shape[0]
 
     if n_nodes < 3:
-        logging.warning("Can't invert block because there are less than 3 nodes")
+        logger.warning("Can't invert block because there are less than 3 nodes")
         return topology
 
     if not sampling_parameters.recurrent:
-        logging.warning(
+        logger.warning(
             "Can't invert block, because recurrent connections are not allowed"
         )
         return topology
@@ -483,7 +485,7 @@ def invert_block(
     start_idx = rng.randint(0, n_nodes - block_size)
     end_idx = start_idx + block_size
 
-    logging.info(
+    logger.info(
         f"Inverting block of size {block_size} at indices {start_idx} to {end_idx}"
     )
 
@@ -600,7 +602,7 @@ def crossover_topologies(
     duplicating it in the other topology.
     """
     if len(topologies) % 2 != 0:
-        logging.warning("Odd number of topologies, discarding last one")
+        logger.warning("Odd number of topologies, discarding last one")
 
     pairs = list(zip(topologies[::2], topologies[1::2]))
 
@@ -614,7 +616,7 @@ def survival_selection(
 ) -> list[Topology]:
 
     if not isinstance(fitness, torch.Tensor):
-        logging.warning("Fitness is not a torch.Tensor, converting to one")
+        logger.warning("Fitness is not a torch.Tensor, converting to one")
         fitness = torch.tensor(fitness)
     
     if fitness.ndim == 2:
@@ -634,7 +636,7 @@ def reproduce(
     original_size = len(topologies)
 
     if original_size < n_babies * 2:
-        logging.info(f"Not enough topologies to reproduce, only {original_size} parents - copying parents to achieve {n_babies} babies")
+        logger.info(f"Not enough topologies to reproduce, only {original_size} parents - copying parents to achieve {n_babies} babies")
         topologies = topologies + topologies[:(n_babies * 2) - len(topologies)]
 
     # shuffle list, then pair topologies up
@@ -659,29 +661,32 @@ def evolution_step(
 
     population_size = len(topologies)
 
-    logging.info(f"Measured population size: {population_size}")
+    logger.info(f"Measured population size: {population_size}")
 
     n_babies = evolution_parameters.reproduction_amount(population_size)
-    logging.info(f"Producing {n_babies} babies")
+    logger.info(f"Producing {n_babies} babies")
 
     # survival selection
-    survived_topologies = survival_selection(topologies, torch.tensor(fitness), evolution_parameters)
-    logging.info(f"{len(survived_topologies)} topologies survived selection")
+    if not isinstance(fitness, torch.Tensor):
+        fitness = torch.tensor(fitness)
+
+    survived_topologies = survival_selection(topologies, fitness, evolution_parameters)
+    logger.info(f"{len(survived_topologies)} topologies survived selection")
 
     # reproduction
     reproduced_topologies = reproduce(survived_topologies, n_babies, rng)
-    logging.info(f"{len(reproduced_topologies)} babies were produced")
+    logger.info(f"{len(reproduced_topologies)} babies were produced")
 
-    logging.info(f"New population size: {len(reproduced_topologies)}")
+    logger.info(f"New population size: {len(reproduced_topologies)}")
     if len(reproduced_topologies) != population_size:
-        logging.warning(f"New population size does not match expected size: {len(reproduced_topologies)} != {population_size}")
+        logger.warning(f"New population size does not match expected size: {len(reproduced_topologies)} != {population_size}")
 
     # mutation
     mutated_topologies = []
     for topology in reproduced_topologies:
         if rng.random() < evolution_parameters.mutation_rate:
             mutated, mutation_type = mutate_topology(topology, sampling_parameters, rng)
-            logging.info(f"Mutated topology with mutation type {mutation_type}")
+            logger.info(f"Mutated topology with mutation type {mutation_type}")
             mutated_topologies.append(mutated)
         else:
             mutated_topologies.append(topology)
@@ -689,7 +694,7 @@ def evolution_step(
     # every once in a while, add a new random topology
     if rng.random() < evolution_parameters.random_sample_rate:
         index = rng.randint(0, len(mutated_topologies))
-        logging.info(f"Replacing topology at index {index} with a random one")
+        logger.info(f"Replacing topology at index {index} with a random one")
         n_nodes = rng.randint(
             min(t.n_nodes for t in mutated_topologies),
             max(t.n_nodes for t in mutated_topologies),

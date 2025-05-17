@@ -8,9 +8,9 @@ import torch
 import random
 import logging
 import numpy as np
-import comp_capacity  # noqa: F401
 import gymnasium as gym
 from typing import Literal
+from itertools import count
 from comp_capacity.repr.network import Topology, ProgressiveRNN
 from comp_capacity.optim.genetic_evolution import evolution_step
 from comp_capacity.optim.random_sample import (
@@ -19,37 +19,110 @@ from comp_capacity.optim.random_sample import (
     SamplingParameters,
 )
 
+logger = logging.getLogger(__name__)
 
-# TODO: set up logging and data storage
+def single_step_eval(
+    module: ProgressiveRNN,
+    envs: gym.Env,
+    seed: int,
+    is_categorical: bool,
+) -> float:
+    device = module.device
+    obs, info = envs.reset(seed=seed)
+    obs = torch.from_numpy(obs).float().to(device)
+    if obs.ndim == 1:
+        obs = obs.unsqueeze(0)
+    state = None
+    module.eval()
+    with torch.no_grad():
+        action, state = module(obs, state=state)
+        if is_categorical:
+            action = torch.distributions.Categorical(logits=action).sample()
+        action = action.squeeze().cpu().numpy()
+        obs, reward, terminated, truncated, info = envs.step(action)
+    return reward
 
 
-def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int) -> list[float]:
+def multi_step_eval(
+    module: ProgressiveRNN,
+    envs: gym.Env,
+    seed: int,
+    is_categorical: bool,
+) -> float:
+    device = module.device
+    batch_size = envs.num_envs
+
+    done_vec = np.zeros(batch_size, dtype=bool)
+    reward_vec = np.zeros(batch_size, dtype=float)
+    total_steps = np.zeros(batch_size, dtype=int)
+    naninf = np.zeros(batch_size, dtype=bool)
+
+    obs, info = envs.reset(seed=seed)
+
+    state = None
+    states = []
+    for step in count(1):
+        obs_tensor = torch.from_numpy(obs).to(device)
+        out, state = module(obs_tensor, state)
+        states.append(state.detach().clone().cpu().numpy())
+        # check if things got out of hand
+        if torch.any(torch.isnan(out)) or torch.any(torch.isnan(state)):
+            # consider it terminated
+            naninf |= np.logical_or(
+                (~np.isfinite(out.detach().cpu())).any(-1),
+                (~np.isfinite(state.detach().cpu())).any(-1),
+            )
+            done_vec |= naninf
+
+            mask = ~torch.isfinite(out)
+            out[mask] = 0.0
+
+        if is_categorical:
+            action = torch.distributions.Categorical(logits=out).sample().cpu().numpy()
+        else:
+            action = out.cpu().numpy()
+
+        obs, reward, terminated, truncated, info = envs.step(action)
+
+        done_vec |= np.logical_or(terminated, truncated)
+        reward_vec += reward * (1 - done_vec)
+        total_steps += 1 * (1 - done_vec)
+
+        if done_vec.all():
+            break
+
+    return reward_vec, total_steps, states, naninf, done_vec
+
+
+def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int, multi_step: bool) -> torch.Tensor:
+    """
+    Returns a tensor of shape (n_modules, batch_size) where each element is the
+    reward for the corresponding module and environment.
+    """
     device = modules[0].device
     is_categorical = isinstance(
         envs.action_space, (gym.spaces.MultiDiscrete, gym.spaces.Discrete)
     )
     if is_categorical:
-        logging.info(f"Action space is categorical: {envs.action_space}")
+        logger.info(f"Action space is categorical: {envs.action_space}")
 
-    # TODO: allow for multiple time steps
-    logging.info(f"Evaluating {len(modules)} modules")
+    if multi_step:
+        logger.info("Evaluating in multistep mode")
+    else:
+        logger.info("Evaluating in single step mode")
+
+    logger.info(f"Evaluating {len(modules)} modules")
     scores = []
+    total_steps = []
+    states = []
+    naninf = []
+    done_vec = []
     for module in modules:
-        # reset environment to same state for each network
-        obs, info = envs.reset(seed=seed)
-        obs = torch.from_numpy(obs).float().to(device)
-        if obs.ndim == 1:
-            obs = obs.unsqueeze(0)
-        state = None
-        module.eval()
-        with torch.no_grad():
-            action, state = module(obs, state=state)
-            if is_categorical:
-                action = torch.distributions.Categorical(logits=action).sample()
-            action = action.squeeze().cpu().numpy()
-            # assume we only take one time step
-            obs, reward, terminated, truncated, info = envs.step(action)
-            scores.append(reward)
+        if multi_step:
+            reward, total_steps, states, naninf, done_vec = multi_step_eval(module, envs, seed, is_categorical)
+        else:
+            reward = single_step_eval(module, envs, seed, is_categorical)
+        scores.append(reward)
     return torch.tensor(np.array(scores))
 
 
@@ -59,6 +132,7 @@ def run(
     batch_size: int,
     gym_env_name: str,
     gym_env_kwargs: dict,
+    gym_env_is_multi_step: bool,
     n_steps: int,
     n_init_nodes: int,
     algorithm: Literal["genetic_evolution", "random_sampling"],
@@ -79,12 +153,12 @@ def run(
     else:
         device = torch.device("cpu")
 
-    logging.info(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
 
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    logging.info(
+    logger.info(
         f"Using random number generator with seed: {seed}. Set torch seed to {seed}."
     )
 
@@ -99,7 +173,7 @@ def run(
     else:
         raise ValueError(f"Algorithm {algorithm} not supported")
 
-    logging.info(f"Running {algorithm} algorithm")
+    logger.info(f"Running {algorithm} algorithm")
 
     envs = gym.make_vec(
         gym_env_name, num_envs=batch_size, vectorization_mode="async", **gym_env_kwargs
@@ -125,16 +199,16 @@ def run(
         for _ in range(n_networks)
     ]
 
-    logging.info(f"Set up initial population of {n_networks} networks")
+    logger.info(f"Set up initial population of {n_networks} networks")
 
     for step in range(n_steps):
         # generate torch.module from networks
         # *only* used in evaluation step
         modules = [ProgressiveRNN(network, device=device) for network in networks]
-        logging.info(f"Running step {step} of {n_steps}")
+        logger.info(f"Running step {step} of {n_steps}")
         # run evaluation step
-        loss = evaluate(modules, envs, seed + step)
-        logging.info(f"Evaluation step {step} complete")
+        loss = evaluate(modules, envs, seed + step, multi_step=gym_env_is_multi_step)
+        logger.info(f"Evaluation step {step} complete")
 
         # run network optimization step
         networks = optim_step(
@@ -147,4 +221,4 @@ def run(
             **extra_params,
         )
 
-        logging.info(f"Step {step} complete")
+        logger.info(f"Step {step} complete")
