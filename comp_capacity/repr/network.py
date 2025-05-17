@@ -1,3 +1,5 @@
+import io
+import gzip
 import torch
 import xxhash
 import numpy as np
@@ -139,6 +141,76 @@ class Topology:
     @property
     def n_nodes(self) -> int:
         return self.inner.adjacency.shape[0]
+
+    def compress(self) -> dict:
+        """Saves the full network topology into a compressed format, which can be reconstructed."""
+        out = {}
+        for prop, m in zip(('input', 'inner', 'output'), self):
+            bytes_obj = io.BytesIO()
+            with gzip.GzipFile(fileobj=bytes_obj, mode="wb") as f:
+                f.write(m.bytes)
+            out[prop] = bytes_obj.getvalue()
+            bytes_obj.close()
+        return out
+
+    @staticmethod
+    def decompress(
+        compressed: dict,
+        n_nodes: int,
+        n_nonlinearities: int,
+        input_dim: int,
+        output_dim: int,
+    ) -> "Topology":
+        """Reconstructs the full network topology from the compressed format."""
+        out = {}
+
+        for prop, m in compressed.items():
+            bytes_obj = io.BytesIO(m)
+            with gzip.GzipFile(fileobj=bytes_obj, mode="rb") as f:
+                _bytes = f.read()
+            if prop == "input":
+                out[prop] = Projection(
+                    adjacency=torch.from_numpy(
+                        np.frombuffer(_bytes, dtype=np.bool_)
+                        .reshape((n_nodes, input_dim))
+                        .copy()
+                    ),
+                    dim=input_dim,
+                )
+            elif prop == "output":
+                out[prop] = Projection(
+                    adjacency=torch.from_numpy(
+                        np.frombuffer(_bytes, dtype=np.bool_)
+                        .reshape((n_nodes, output_dim))
+                        .copy()
+                    ),
+                    dim=output_dim,
+                )
+            else:
+                out[prop] = InnerTopology(
+                    adjacency=torch.from_numpy(
+                        np.frombuffer(_bytes[: n_nodes * n_nodes], dtype=np.bool_)
+                        .reshape((n_nodes, n_nodes))
+                        .copy()
+                    ),
+                    module=torch.from_numpy(
+                        np.frombuffer(
+                            _bytes[n_nodes * n_nodes : n_nodes * n_nodes + n_nodes],
+                            dtype=np.bool_,
+                        )
+                        .reshape((n_nodes, 1))
+                        .copy()
+                    ),
+                    nonlinearity=torch.from_numpy(
+                        np.frombuffer(
+                            _bytes[n_nodes * n_nodes + n_nodes :],
+                            dtype=np.bool_,
+                        )
+                        .reshape((n_nodes, n_nonlinearities))
+                        .copy()
+                    ),
+                )
+        return Topology(input=out["input"], inner=out["inner"], output=out["output"])
 
     def __iter__(self):
         return iter((self.input, self.inner, self.output))

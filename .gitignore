@@ -175,6 +175,7 @@ cython_debug/
 
 # ignore data folder
 data/
+test_data/
 
 # ignore vscode
 .vscode

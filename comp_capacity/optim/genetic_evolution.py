@@ -271,10 +271,13 @@ def add_edge(
         module=topology.inner.module,
     )
 
-    return Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    return candidate
 
 
-def remove_edge(topology: Topology, rng: random.Random) -> Topology:
+def remove_edge(topology: Topology, sampling_parameters: SamplingParameters, rng: random.Random) -> Topology:
     # get indices for existing edges
     existing_edges = torch.nonzero(topology.inner.adjacency)
 
@@ -292,7 +295,11 @@ def remove_edge(topology: Topology, rng: random.Random) -> Topology:
         module=topology.inner.module,
     )
 
-    return Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+
+    return candidate
 
 
 def move_edge(
@@ -330,7 +337,10 @@ def move_edge(
         module=topology.inner.module,
     )
 
-    return Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    return candidate
 
 
 def manipulate_topology(
@@ -351,7 +361,7 @@ def manipulate_topology(
         if to_manipulate == "node":
             new_topology = remove_node(topology, sampling_parameters, rng)
         elif to_manipulate == "edge":
-            new_topology = remove_edge(topology, rng)
+            new_topology = remove_edge(topology, sampling_parameters, rng)
 
     elif manipulation_type == ManipulationType.MOVE:
         if to_manipulate == "node":
@@ -510,7 +520,10 @@ def invert_block(
         module=topology.inner.module,
     )
 
-    return Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    return candidate
 
 
 def mutate_topology(
@@ -687,8 +700,8 @@ def evolution_step(
     mutated_topologies = []
     for topology in reproduced_topologies:
         if rng.random() < evolution_parameters.mutation_rate:
-            logger.info(f"Mutating topology with type {mutation_type}")
             mutated, mutation_type = mutate_topology(topology, sampling_parameters, rng)
+            logger.info(f"Mutated topology with type {mutation_type}")
             mutated_topologies.append(mutated)
         else:
             mutated_topologies.append(topology)

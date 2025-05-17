@@ -23,6 +23,7 @@ dependencies = [
     "pyarrow>=19.0.1",
     "umap-learn>=0.5.7",
     "xxhash>=3.5.0",
+    "toolz>=1.0.0",
 ]
 
 [project.optional-dependencies]

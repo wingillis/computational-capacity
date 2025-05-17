@@ -9,8 +9,10 @@ import random
 import logging
 import numpy as np
 import gymnasium as gym
+from toolz import pluck
 from typing import Literal
 from itertools import count
+from comp_capacity.save import SavingBuffer
 from comp_capacity.repr.network import Topology, ProgressiveRNN
 from comp_capacity.optim.genetic_evolution import evolution_step
 from comp_capacity.optim.random_sample import (
@@ -20,6 +22,19 @@ from comp_capacity.optim.random_sample import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def setup_data(data: dict) -> list[dict]:
+    """Transforms the data dict from the eval step into a list of dicts, where each item is the
+    outcome of a single batch."""
+    out = []
+    keys = list(data.keys())
+    for batch_num in range(len(data[keys[0]])):
+        d = {key: data[key][batch_num] for key in keys}
+        d['batch_num'] = batch_num
+        out.append(d)
+    return out
+
 
 def single_step_eval(
     module: ProgressiveRNN,
@@ -91,10 +106,10 @@ def multi_step_eval(
         if done_vec.all():
             break
 
-    return reward_vec, total_steps, states, naninf, done_vec
+    return reward_vec, total_steps, naninf, done_vec
 
 
-def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int, multi_step: bool) -> torch.Tensor:
+def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int, multi_step: bool) -> list[dict]:
     """
     Returns a tensor of shape (n_modules, batch_size) where each element is the
     reward for the corresponding module and environment.
@@ -112,18 +127,22 @@ def evaluate(modules: list[ProgressiveRNN], envs: gym.Env, seed: int, multi_step
         logger.info("Evaluating in single step mode")
 
     logger.info(f"Evaluating {len(modules)} modules")
-    scores = []
-    total_steps = []
-    states = []
-    naninf = []
-    done_vec = []
+    out = []
     for module in modules:
         if multi_step:
-            reward, total_steps, states, naninf, done_vec = multi_step_eval(module, envs, seed, is_categorical)
+            reward, total_steps, naninf, done_vec = multi_step_eval(module, envs, seed, is_categorical)
+            out.append({
+                'reward': reward,
+                'total_steps': total_steps,
+                'naninf': naninf,
+                'done_vec': done_vec,
+            })
         else:
             reward = single_step_eval(module, envs, seed, is_categorical)
-        scores.append(reward)
-    return torch.tensor(np.array(scores))
+            out.append({
+                'reward': reward,
+            })
+    return out
 
 
 # a generic function to run any of the optimization algorithms
@@ -138,6 +157,7 @@ def run(
     algorithm: Literal["genetic_evolution", "random_sampling"],
     sampling_parameters: SamplingParameters,
     extra_params: dict,
+    data_save_folder: str,
     seed: int | None = None,
 ):
     """
@@ -204,14 +224,41 @@ def run(
 
     logger.info(f"Set up initial population of {n_networks} networks")
 
+    saver = SavingBuffer(buffer_size=2000, folder_path=data_save_folder, file_base_name=f"{algorithm}_{gym_env_name}")
+
     for step in range(n_steps):
         # generate torch.module from networks
         # *only* used in evaluation step
         modules = [ProgressiveRNN(network, device=device) for network in networks]
         logger.info(f"Running step {step} of {n_steps}")
         # run evaluation step
-        loss = evaluate(modules, envs, seed + step, multi_step=gym_env_is_multi_step)
+        eval_out = evaluate(modules, envs, seed + step, multi_step=gym_env_is_multi_step)
+        loss = torch.from_numpy(np.array(list(pluck('reward', eval_out)))).to(dtype=torch.float32, device=device)
         logger.info(f"Evaluation step {step} complete")
+
+        # data saving step
+        for model_num, eval_dict in enumerate(eval_out):
+            eval_dict = setup_data(eval_dict)
+            for item in eval_dict:
+                save_item = {
+                    'model_num': model_num,
+                    'step': step,
+                    'model_hash': networks[model_num].hash,
+                    'n_nodes': networks[model_num].n_nodes,
+                    'output_dim': output_dim,
+                    'input_dim': input_dim,
+                    'seed': seed,
+                    'env_name': gym_env_name,
+                    'env_kwargs': str(gym_env_kwargs),
+                    'opt_algorithm': algorithm,
+                    'is_recurrent': sampling_parameters.recurrent,
+                    'parameter_count': sum(p.numel() for p in modules[model_num].parameters()),
+                    'n_nonlinearities': networks[model_num].inner.nonlinearity.shape[1],
+                }
+                # added compressed topology - original topology can be recovered from it
+                save_item = {**item, **save_item, **networks[model_num].compress()}
+                saver.add(save_item)
+        logger.info("Saved data to buffer")
 
         # run network optimization step
         networks = optim_step(
