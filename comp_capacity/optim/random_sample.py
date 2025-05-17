@@ -296,6 +296,8 @@ def sample_topology(
     device: torch.device | None = None,
     rng: random.Random | None = None,
 ) -> Topology:
+    logger.info(f"Randomly sampling new topology with {n_nodes} nodes, {input_dim} input dim, {output_dim} output dim")
+
     if rng is None:
         rng = random.Random()
 

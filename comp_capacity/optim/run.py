@@ -175,6 +175,9 @@ def run(
 
     logger.info(f"Running {algorithm} algorithm")
 
+    logger.info(f"Setting up environment {gym_env_name} with batch size {batch_size}")
+    logger.info(f"env kwargs: {gym_env_kwargs}")
+
     envs = gym.make_vec(
         gym_env_name, num_envs=batch_size, vectorization_mode="async", **gym_env_kwargs
     )
@@ -222,3 +225,4 @@ def run(
         )
 
         logger.info(f"Step {step} complete")
+        logger.info(f"Best score so far: {loss.max()}")

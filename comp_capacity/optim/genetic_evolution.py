@@ -280,6 +280,7 @@ def remove_edge(topology: Topology, rng: random.Random) -> Topology:
 
     # sample a random edge
     remove_edge = rng.choice(existing_edges)
+    logger.info(f"Removing edge between {remove_edge[0]} and {remove_edge[1]}")
 
     # create new adjacency matrix
     new_adjacency = topology.inner.adjacency.clone()
@@ -339,6 +340,7 @@ def manipulate_topology(
     to_manipulate: Literal["node", "edge"],
     rng: random.Random,
 ) -> Topology:
+    logger.info(f"Manipulating topology with type {manipulation_type}")
     if manipulation_type == ManipulationType.ADD:
         if to_manipulate == "node":
             new_topology = add_node(topology, sampling_parameters, rng)
@@ -685,8 +687,8 @@ def evolution_step(
     mutated_topologies = []
     for topology in reproduced_topologies:
         if rng.random() < evolution_parameters.mutation_rate:
+            logger.info(f"Mutating topology with type {mutation_type}")
             mutated, mutation_type = mutate_topology(topology, sampling_parameters, rng)
-            logger.info(f"Mutated topology with mutation type {mutation_type}")
             mutated_topologies.append(mutated)
         else:
             mutated_topologies.append(topology)
