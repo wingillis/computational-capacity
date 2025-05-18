@@ -16,7 +16,7 @@ from comp_capacity.optim.genetic_evolution import EvolutionParameters
 
 def change_log_file_path(log_file_path: str) -> str:
     """Change the log file path to a new path."""
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("comp_capacity")
 
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
