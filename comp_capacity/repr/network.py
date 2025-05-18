@@ -46,10 +46,12 @@ class Projection:
 
     def __post_init__(self):
         # check if projection is fully connected - i.e., all projection dims are connected single nodes
+        self.adjacency = self.adjacency.to(dtype=torch.bool)
         mask = self.adjacency.all(dim=0)
         not_fully_connected = (self.adjacency.any(dim=0) & ~mask).cpu().numpy()
 
         self.fully_connected = bool(not_fully_connected.sum() == 0)
+
 
     @property
     def hash(self) -> str:
@@ -86,6 +88,9 @@ class InnerTopology:
     weights: torch.Tensor | None = None
 
     def __post_init__(self):
+        self.adjacency = self.adjacency.to(dtype=torch.bool)
+        self.nonlinearity = self.nonlinearity.to(dtype=torch.bool)
+
         if self.module is None:
             self.module = torch.ones(
                 (self.adjacency.shape[0], 1),

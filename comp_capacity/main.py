@@ -1,13 +1,39 @@
 """
 This module implements the command-line interface for this project.
 """
+
 import ast
 import tyro
-from typing import Literal, Annotated
+import logging
+from pathlib import Path
+from typing import Literal
+from datetime import datetime
+from pydantic import BaseModel
 from comp_capacity.optim.run import run
-from pydantic import BaseModel, AfterValidator
 from comp_capacity.optim.random_sample import SamplingParameters
 from comp_capacity.optim.genetic_evolution import EvolutionParameters
+
+
+def change_log_file_path(log_file_path: str) -> str:
+    """Change the log file path to a new path."""
+    logger = logging.getLogger(__name__)
+
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            logger.removeHandler(handler)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(module)s:%(lineno)d - %(message)s"
+    )
+    now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    handler = logging.FileHandler(f"{log_file_path}/comp_capacity_{now}.log")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(formatter)
+
+    logger.addHandler(handler)
+
+    return log_file_path
 
 
 def parse_dict(dict_str: str) -> dict:
@@ -15,6 +41,7 @@ def parse_dict(dict_str: str) -> dict:
     if dict_str == "":
         return {}
     return ast.literal_eval(dict_str)
+
 
 class Args(BaseModel):
     algorithm: Literal["random_sampling", "genetic_evolution"]
@@ -51,6 +78,9 @@ class Args(BaseModel):
 def main():
     args = tyro.cli(Args)
     gym_env_kwargs = parse_dict(args.gym_env_kwargs)
+
+    Path(args.save_folder).mkdir(parents=True, exist_ok=True)
+    _ = change_log_file_path(args.save_folder)
 
     run(
         n_networks=args.n_networks,
