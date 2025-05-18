@@ -307,14 +307,16 @@ class ProgressiveRNN(Network):
         self.input_dim = topology.input.dim
         self.output_dim = topology.output.dim
 
+        n_nodes = topology.inner.adjacency.shape[0]
+
         new_adjacency = torch.zeros(
-            (topology.inner.adjacency.shape[0] + 2, ) * 2,
+            (n_nodes + 2, ) * 2,
             dtype=torch.bool,
             device=device,
         )
         new_adjacency[0, 1 : -1] = input_mask
         new_adjacency[1 : -1, -1] = output_mask
-        new_adjacency[1 : -1, 1 : -1] = topology.inner.adjacency
+        new_adjacency[1 : -1, 1 : -1] = topology.inner.adjacency.to(device=device)
         self.adj_matrix = new_adjacency
         self.input_mask = new_adjacency[0]
         self.output_mask = new_adjacency[:, -1]

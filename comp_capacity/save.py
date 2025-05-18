@@ -25,8 +25,11 @@ class SavingBuffer:
         self.buffer.append(data)
 
     def __del__(self):
-        if len(self.buffer) > 0:
-            save_df(self.buffer, self.folder_path, index=self.index, file_base_name=self.file_base_name)
+        try:
+            if len(self.buffer) > 0:
+                save_df(self.buffer, self.folder_path, index=self.index, file_base_name=self.file_base_name)
+        except TypeError:
+            logger.error("Error saving buffer - probably code crash")
 
 
 def dict_to_df(data: list[dict]) -> pl.DataFrame:

@@ -217,11 +217,11 @@ def run(
 
     input_dim = envs.observation_space.shape[-1]
     if isinstance(envs.action_space, gym.spaces.MultiDiscrete):
-        output_dim = envs.action_space[0].n
+        output_dim = int(envs.action_space[0].n)
     elif isinstance(envs.action_space, gym.spaces.Discrete):
-        output_dim = envs.action_space.n
+        output_dim = int(envs.action_space.n)
     else:
-        output_dim = envs.action_space.shape[-1]
+        output_dim = int(envs.action_space.shape[-1])
 
     # setup initial population
     networks: list[Topology] = [
@@ -244,7 +244,9 @@ def run(
         file_base_name=f"{algorithm}_{gym_env_name}",
     )
 
-    for step in tqdm(range(n_steps)):
+    pbar = tqdm(range(n_steps))
+
+    for step in pbar:
         # generate torch.module from networks
         # *only* used in evaluation step - some parameters are saved too
         modules = [
@@ -313,4 +315,8 @@ def run(
         )
 
         logger.info(f"Step {step} complete")
-        logger.info(f"Best score so far: {loss.max()}")
+        logger.info(f"Best score this epoch: {loss.max()}")
+
+        _n_nodes = networks[0].n_nodes
+
+        pbar.set_description(f"Best score this epoch={loss.max():.1e}; # nodes={_n_nodes}")

@@ -51,6 +51,8 @@ class EvolutionParameters(BaseModel):
         ge=0, le=1, default=0.1
     )
     """Probability of adding a new random topology to the population."""
+    survival_selection_temperature: float = Field(ge=0, default=1e-3)
+    """Temperature for modifying the survival selection probability."""
 
     def reproduction_amount(self, total_pop: int) -> int:
         # keep population size constant
@@ -556,7 +558,7 @@ def mutate_topology(
     return mutated_topology, mutation_type
 
 
-def crossover(topology1: Topology, topology2: Topology, rng: random.Random) -> Topology:
+def crossover(topology1: Topology, topology2: Topology, sampling_parameters: SamplingParameters, rng: random.Random) -> Topology:
     """
     Receives two topologies and performs a crossover.
     The crossover itself is done by selecting a random block from one topology and
@@ -606,13 +608,44 @@ def crossover(topology1: Topology, topology2: Topology, rng: random.Random) -> T
         nonlinearity=nonlinearity2,
     )
 
-    # TODO: check that the input and output projections are valid sizes
+    new_input_adjacency = topology2.input.adjacency.clone()
+    _tmp_input_adj = topology1.input.adjacency.clone()
 
-    return Topology(input=topology2.input, output=topology2.output, inner=new_inner)
+    new_output_adjacency = topology2.output.adjacency.clone()
+    _tmp_output_adj = topology1.output.adjacency.clone()
+
+    if end_idx > min_size:
+        new_input_adjacency = _pad(new_input_adjacency, square=False)
+        _tmp_input_adj = _pad(_tmp_input_adj, square=False)
+
+        new_output_adjacency = _pad(new_output_adjacency, square=False)
+        _tmp_output_adj = _pad(_tmp_output_adj, square=False)
+
+    new_input_adjacency[start_idx:end_idx] = _tmp_input_adj[start_idx:end_idx]
+    new_output_adjacency[start_idx:end_idx] = _tmp_output_adj[start_idx:end_idx]
+
+    new_input = Projection(
+        dim=topology2.input.dim,
+        device=topology2.input.adjacency.device,
+        adjacency=new_input_adjacency,
+        weights=topology2.input.weights,
+    )
+
+    new_output = Projection(
+        dim=topology2.output.dim,
+        device=topology2.output.adjacency.device,
+        adjacency=new_output_adjacency,
+        weights=topology2.output.weights,
+    )
+
+    candidate = Topology(input=new_input, output=new_output, inner=new_inner)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
+    return candidate
 
 
 def crossover_topologies(
-    topologies: list[Topology], rng: random.Random
+    topologies: list[Topology], sampling_parameters: SamplingParameters, rng: random.Random
 ) -> list[Topology]:
     """
     Receives a population of topologies, pairs them up, and performs a crossover.
@@ -624,7 +657,7 @@ def crossover_topologies(
 
     pairs = list(zip(topologies[::2], topologies[1::2]))
 
-    new_topologies = [crossover(*pair, rng) for pair in pairs]
+    new_topologies = [crossover(*pair, sampling_parameters, rng) for pair in pairs]
 
     return new_topologies
 
@@ -641,14 +674,14 @@ def survival_selection(
         fitness = fitness.mean(dim=1)
 
     # fitness proportional selection approach
-    choices = torch.distributions.Categorical(probs=fitness).sample(
+    choices = torch.distributions.Categorical(logits=fitness / parameters.survival_selection_temperature).sample(
         (round(len(topologies) * parameters.survival_rate), )
     )
     return [topologies[i] for i in choices]
 
 
 def reproduce(
-    topologies: list[Topology], n_babies: int, rng: random.Random
+    topologies: list[Topology], n_babies: int, sampling_parameters: SamplingParameters, rng: random.Random
 ) -> list[Topology]:
 
     original_size = len(topologies)
@@ -662,7 +695,7 @@ def reproduce(
 
     parents = topologies[: n_babies * 2]
 
-    babies = crossover_topologies(parents, rng)
+    babies = crossover_topologies(parents, sampling_parameters, rng)
 
     return topologies[:original_size] + babies
 
@@ -692,7 +725,7 @@ def evolution_step(
     logger.info(f"{len(survived_topologies)} topologies survived selection")
 
     # reproduction
-    reproduced_topologies = reproduce(survived_topologies, n_babies, rng)
+    reproduced_topologies = reproduce(survived_topologies, n_babies, sampling_parameters, rng)
     logger.info(f"{len(reproduced_topologies)} babies were produced")
 
     logger.info(f"New population size: {len(reproduced_topologies)}")
@@ -711,7 +744,7 @@ def evolution_step(
 
     # every once in a while, add a new random topology
     if rng.random() < evolution_parameters.random_sample_rate:
-        index = rng.randint(0, len(mutated_topologies))
+        index = rng.randint(0, len(mutated_topologies) - 1)
         logger.info(f"Replacing topology at index {index} with a random one")
         n_nodes = rng.randint(
             min(t.n_nodes for t in mutated_topologies),
