@@ -47,9 +47,9 @@ class Projection:
     def __post_init__(self):
         # check if projection is fully connected - i.e., all projection dims are connected single nodes
         mask = self.adjacency.all(dim=0)
-        not_fully_connected = self.adjacency.any(dim=0) & ~mask
+        not_fully_connected = (self.adjacency.any(dim=0) & ~mask).cpu().numpy()
 
-        self.fully_connected = not_fully_connected.sum() == 0
+        self.fully_connected = bool(not_fully_connected.sum() == 0)
 
     @property
     def hash(self) -> str:
@@ -215,6 +215,9 @@ class Topology:
     def __iter__(self):
         return iter((self.input, self.inner, self.output))
 
+    def __repr__(self):
+        return f"input:\n{self.input}\ninner:\n{self.inner}\noutput:\n{self.output}"
+
 
 class OldTopology(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -329,12 +332,13 @@ class ProgressiveRNN(Network):
                 if module.bias is not None:
                     nn.init.normal_(module.bias, std=0.1)
         elif self.weight_init == "binary":
+            # weight and bias can take the values of: -1, 0, 1
             if isinstance(module, nn.Linear):
                 with torch.no_grad():
-                    module.weight = torch.bernoulli(torch.ones_like(module.weight) * 0.5)
+                    module.weight = torch.bernoulli(torch.ones_like(module.weight) * 0.5) * -torch.bernoulli(torch.ones_like(module.weight) * 0.5)
                 if module.bias is not None:
                     with torch.no_grad():
-                        module.bias = torch.bernoulli(torch.ones_like(module.bias) * 0.5)
+                        module.bias = torch.bernoulli(torch.ones_like(module.bias) * 0.5) * -torch.bernoulli(torch.ones_like(module.bias) * 0.5)
         elif self.weight_init == "normal":
             if isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight)

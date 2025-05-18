@@ -16,13 +16,16 @@ from comp_capacity.repr.network import (
 logger = logging.getLogger(__name__)
 
 class SamplingParameters(BaseModel):
-    connection_prob: float
-    recurrent: bool
-    # flag to allow modification of input/output projections
-    # for now, I keep it on because otherwise the search space can be too large
+    connection_prob: float = Field(gt=0, lt=1, default=0.5)
+    """Probability of connecting two nodes, used in a Bernoulli sampler."""
+    recurrent: bool = False
+    """Flag to allow recurrent connections."""
     use_fully_connected_projections: bool = True
-    # this parameter is for random sampling only
+    """Flag to allow modification of input/output projections. Keep this on by default
+    to reduce the search space."""
     increase_node_prob: float = Field(gt=0, lt=1, default=0.1)
+    """Probability of increasing the number of nodes in the topology. Used with the random
+    sampling algorithm only."""
 
 
 def construct_sampling_mask(
@@ -76,6 +79,7 @@ def ensure_projection_connectivity(
     topology: Topology,
     parameters: SamplingParameters,
     projection_type: Literal["input", "output"],
+    rng: random.Random | None = None,
 ) -> Topology:
     """
     Ensure every node is reachable from the `index` node by repeatedly
@@ -89,6 +93,9 @@ def ensure_projection_connectivity(
         Topology: The updated topology.
     """
     device = topology.inner.adjacency.device
+
+    if rng is None:
+        rng = random.Random()
 
     # step 1: collapse input projection onto n_node dimension
     input_row = topology.input.adjacency.any(dim=1)
@@ -132,6 +139,14 @@ def ensure_projection_connectivity(
     probs_mask[0, -1] = 0
     probs_mask[:, 0] = 0
     probs_mask[-1, :] = 0
+
+    # make sure each node has at least one connection
+    for i in range(1, n_nodes - 1):
+        if not new_adjacency[1:-1, i].any():
+            indices = np.where(probs_mask[1:-1, i])[0] + 1
+            index = rng.choice(indices)
+            new_adjacency[index, i] = True
+            logger.info(f"Node {i} has no connections, adding connection from {index} to {i}")
 
     while True:
         # 1) compute reachability
@@ -342,10 +357,10 @@ def sample_topology(
     )
 
     # make sure each node is reachable from the input node
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
 
     # make sure output node is reachable from all nodes
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
 
     return candidate
 

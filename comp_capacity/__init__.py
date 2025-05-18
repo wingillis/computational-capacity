@@ -1,6 +1,7 @@
 """This code gets run when the package or a submodule is imported."""
 import logging
 import gymnasium as gym
+import ale_py
 
 #### register all custom envs ####
 
@@ -13,6 +14,8 @@ gym.register(
     id="SequentialPatterns-v0",
     entry_point="comp_capacity.sim.pattern_complete:SequentialPatterns",
 )
+
+gym.register_envs(ale_py)
 
 #### set up logging ####
 

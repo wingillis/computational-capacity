@@ -24,6 +24,8 @@ dependencies = [
     "umap-learn>=0.5.7",
     "xxhash>=3.5.0",
     "toolz>=1.0.0",
+    "tyro>=0.9.20",
+    "ale-py>=0.11.0",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +34,11 @@ dev = [
     "ipython>=9.1.0",
     "ipywidgets>=8.1.6",
 ]
+
+
+[project.scripts]
+topology-learn = "comp_capacity.main:main"
+
 
 [build-system]
 requires = ["hatchling >= 1.26"]

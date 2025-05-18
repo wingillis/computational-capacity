@@ -43,11 +43,14 @@ class ManipulationType(Enum):
 
 
 class EvolutionParameters(BaseModel):
-    survival_rate: float = Field(ge=0, le=1)  # proportion of population to survive
-    mutation_rate: float = Field(ge=0, le=1)  # proportion of population to mutate
+    survival_rate: float = Field(ge=0, le=1, default=0.5)
+    """Proportion of population to survive."""
+    mutation_rate: float = Field(ge=0, le=1, default=0.1)
+    """Proportion of population to mutate."""
     random_sample_rate: float = Field(
-        ge=0, le=1, default=0
-    )  # probability of adding a new random topology
+        ge=0, le=1, default=0.1
+    )
+    """Probability of adding a new random topology to the population."""
 
     def reproduction_amount(self, total_pop: int) -> int:
         # keep population size constant
@@ -156,8 +159,8 @@ def add_node(
 
     candidate = Topology(input=new_input, output=new_output, inner=new_inner)
 
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
 
     return candidate
 
@@ -233,8 +236,8 @@ def remove_node(
 
     candidate = Topology(input=new_input, output=new_output, inner=new_inner)
 
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
 
     return candidate
 
@@ -272,8 +275,8 @@ def add_edge(
     )
 
     candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
     return candidate
 
 
@@ -296,8 +299,8 @@ def remove_edge(topology: Topology, sampling_parameters: SamplingParameters, rng
     )
 
     candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
 
     return candidate
 
@@ -338,8 +341,8 @@ def move_edge(
     )
 
     candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
     return candidate
 
 
@@ -521,8 +524,8 @@ def invert_block(
     )
 
     candidate = Topology(input=topology.input, output=topology.output, inner=new_inner)
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input")
-    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output")
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "input", rng=rng)
+    candidate = ensure_projection_connectivity(candidate, sampling_parameters, "output", rng=rng)
     return candidate
 
 
